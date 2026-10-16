@@ -156,76 +156,6 @@ function buildGeometry(mesh: O3DMesh, originTrans: [number, number, number], ori
   return geo;
 }
 
-/** Bounding box pozic meshe v jeho vstupním (mesh) prostoru. */
-function meshBBox(mesh: O3DMesh): { min: [number, number, number]; max: [number, number, number] } {
-  const min: [number, number, number] = [Infinity, Infinity, Infinity];
-  const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
-  for (let i = 0; i < mesh.vertexCount; i++) {
-    for (let k = 0; k < 3; k++) {
-      const v = mesh.positions[i * 3 + k];
-      if (v < min[k]) min[k] = v;
-      if (v > max[k]) max[k] = v;
-    }
-  }
-  return { min, max };
-}
-
-/**
- * Konzervativní detekce „rozsypaných" o3d-v5 meshů (viz o3d.ts / poznámky): některé
- * soubory (budka Stellwerk, reklamní hodiny Werbeuhr…) mají interně nekonzistentní
- * data vrcholů/indexů a vykreslí se jako naježená „kostka". Poznáme je podle toho, že
- * bounding box je PŘESNÁ krychle – shodné rozměry i rohy ve všech osách (do 2 %). Reálné
- * budovy jsou vždy nesymetrické, takže je to nechytí. Takové meshe nahradíme boxem.
- */
-function looksCubeScrambled(mesh: O3DMesh): boolean {
-  if (mesh.triangleCount < 12) return false; // malé objekty neřešíme
-  const { min, max } = meshBBox(mesh);
-  const sx = max[0] - min[0], sy = max[1] - min[1], sz = max[2] - min[2];
-  const avg = (sx + sy + sz) / 3;
-  if (!Number.isFinite(avg) || avg < 1) return false;
-  const tol = 0.02 * avg;
-  const sizeSpread = Math.max(sx, sy, sz) - Math.min(sx, sy, sz);
-  const minSpread = Math.max(...min) - Math.min(...min);
-  const maxSpread = Math.max(...max) - Math.min(...max);
-  return sizeSpread < tol && minSpread < tol && maxSpread < tol;
-}
-
-/** Syntetický box-mesh (24 vrcholů, 12 trojúhelníků) v rozměru [min,max] pro náhradu. */
-function makeBoxMesh(min: [number, number, number], max: [number, number, number]): O3DMesh {
-  const [x0, y0, z0] = min, [x1, y1, z1] = max;
-  // 6 stěn po 4 vrcholech (kvůli plochým stěnám a UV)
-  const faces: [number, number, number][][] = [
-    [[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]], // +Z
-    [[x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]], // -Z
-    [[x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1]], // +X
-    [[x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]], // -X
-    [[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]], // +Y
-    [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]], // -Y
-  ];
-  const positions = new Float32Array(24 * 3);
-  const uvs = new Float32Array(24 * 2);
-  const indices = new Uint32Array(12 * 3);
-  const matIndex = new Uint16Array(12);
-  const faceUV: [number, number][] = [[0, 0], [1, 0], [1, 1], [0, 1]];
-  faces.forEach((f, fi) => {
-    const base = fi * 4;
-    f.forEach((v, vi) => {
-      positions[(base + vi) * 3] = v[0];
-      positions[(base + vi) * 3 + 1] = v[1];
-      positions[(base + vi) * 3 + 2] = v[2];
-      uvs[(base + vi) * 2] = faceUV[vi][0];
-      uvs[(base + vi) * 2 + 1] = faceUV[vi][1];
-    });
-    const t = fi * 2;
-    indices[t * 3] = base; indices[t * 3 + 1] = base + 1; indices[t * 3 + 2] = base + 2;
-    indices[(t + 1) * 3] = base; indices[(t + 1) * 3 + 1] = base + 2; indices[(t + 1) * 3 + 2] = base + 3;
-  });
-  return {
-    positions, normals: new Float32Array(24 * 3), uvs, indices, matIndex,
-    materials: [{ texture: "", diffuse: [0.8, 0.8, 0.8, 1] }], vertexCount: 24, triangleCount: 12,
-  };
-}
-
 /** Načte mesh objektu: nejdřív zkompilovaný .o3d, při selhání textový .x. */
 async function loadMesh(src: AssetSource, scoDir: string, file: string): Promise<{ mesh: O3DMesh; space: MeshSpace } | null> {
   const stem = baseOf(file).replace(/\.[^.]+$/, "");
@@ -364,14 +294,8 @@ export async function loadModel(src: AssetSource, scoPath: string): Promise<Load
     const origin: [number, number, number] = loaded.space === "o3d" ? meshDef.originTrans : [0, 0, 0];
     const rotY = loaded.space === "o3d" ? meshDef.originRotY : 0;
     const materials = await buildMaterials(src, scoDir, loaded.mesh, meshDef.matls);
-    // Rozsypaný o3d-v5 (naježená „kostka") → náhradní box v rozměru bboxu s 1. texturou.
-    const meshToBuild = loaded.space === "o3d" && looksCubeScrambled(loaded.mesh)
-      ? makeBoxMesh(meshBBox(loaded.mesh).min, meshBBox(loaded.mesh).max)
-      : loaded.mesh;
-    const geometry = buildGeometry(meshToBuild, origin, rotY, loaded.space);
-    const material = meshToBuild === loaded.mesh
-      ? (materials.length === 1 ? materials[0] : materials)
-      : materials[0]; // box má jen materiál 0
+    const geometry = buildGeometry(loaded.mesh, origin, rotY, loaded.space);
+    const material = materials.length === 1 ? materials[0] : materials;
     parts.push({ geometry, material });
   }
 
