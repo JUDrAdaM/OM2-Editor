@@ -81,20 +81,29 @@ Berlin-Spandau matches the owner's reported reference (~369 tiles / 30,310 objec
   renders unchanged (no scatter → matrix convention correct). Removing the old
   `looksCubeScrambled` box fallback earlier exposed these; now fixed at the root.
 
-### D6 — Oversized / inflated-bbox meshes (e.g. `Kreuz_*_See` junctions)  — NEW, NOT YET FIXED
-- **Where:** some large o3d render as a spike/blob. Example
-  `Kreuz_Klost_Wilh_See.o3d`: parses cleanly (`fb=false`, identity matrix,
-  0% hedgehog) yet vertices span a **±170m cube in all three axes** including
-  vertical (z −172..166); 50% of verts are >80m from the median.
-- **Distinct from D3** (not a material-chunk/fallback case; predates the D3 fix).
-- **Scope:** a sweep for min-dimension >40m found 64/8000, but **most are
-  legitimate** large structures (high-rises `bw_hoch_*`, quarry `kamenolom`
-  347×83×302, bridge `mostm` 504×75×291). Only extreme cubic cases like
-  `Kreuz_*_See` look wrong. No reliable automatic separator yet.
-- **Next step:** determine whether these o3d use a sub-mesh/scale/second-chunk
-  layout the parser mishandles, or are genuinely authored large; compare a
-  `Kreuz_*_See` against a visually-correct large junction. Do **not** mask with a
-  size heuristic (would hide legitimate towers/bridges).
+### D6 — OMSI intelligent-crossing templates rendered as spikes  — FIXED (interim; full fix = crossing deformation)
+- **What it is (investigation conclusion):** objects like `Kreuz_Klost_Wilh_See`
+  are OMSI **intelligent crossings** (Kreuzungen) / platforms. The o3d parses
+  **byte-perfectly** (verified: raw float decode matches, single mesh chunk,
+  identity `0x79` matrix, unit normals, valid UVs, coherent indices — avg
+  adjacent-index gap 3.4). It is **not** a parser bug and is distinct from D3.
+  The `.sco` has `[rendertype] surface` + traffic-light phases; the mesh is a
+  large **template** (vertices span ~±160m) that OMSI **deforms at runtime** to
+  fit the connected roads. Rendered statically it is a giant spike.
+- **Proper fix:** implement OMSI's crossing-deformation (morph template to the
+  attached splines) — a large separate feature (queued).
+- **Interim fix (`src/omsi/sco.ts` + `src/viewport/models.ts`):** parse
+  `[rendertype]`; skip a mesh when `rendertype == "surface"` **and** its bbox is
+  an implausibly large near-cube (every axis > 120 m, max/min < 1.6). The object
+  stays in the map/tree and renders as a small placeholder box (via the existing
+  fallback); a `console.warn` names each skipped mesh. No map data is modified.
+- **Verification (correlation sweep over 13,080 `.sco`):** the dual-gate catches
+  **35** meshes — **all** in `Kreuz_MC` / `Kreuz_RUE` / `Railroad_RUE`
+  (`Kreuz_*`, `Einm_*`, `Checkpoint_*`, `Extra_*`, `Falkensee_Bahnsteig`), i.e.
+  exactly the crossing/platform templates. **Zero** legitimate objects caught;
+  **zero** large non-cube surface objects missed (so towers `bw_hoch_*`, bridge
+  `mostm` 504×75×291, quarry `kamenolom`, hall `bw_hall_grey_1` are untouched).
+  Berlin-Spandau 60-tile slice: spike gone, scene clean, warnings logged.
 
 ### D4 — No frustum culling / no visibility management  — NOT YET FIXED
 - **Where:** `src/viewport/viewport.ts` — `inst.frustumCulled = false`; no spatial

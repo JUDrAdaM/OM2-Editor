@@ -2,6 +2,39 @@
 
 See `AUDIT.md` for the full defect list and root-cause evidence.
 
+## Session 2026-10-16 (D6 — intelligent-crossing template spikes)
+
+### Files changed
+- `src/omsi/sco.ts` — parse `[rendertype]` into `ScoInfo.rendertype`.
+- `src/viewport/models.ts` — `isDeformedCrossingTemplate` + `meshDims`; skip a
+  surface-type mesh whose bbox is a large near-cube (>120m, ratio <1.6); warn.
+- `AUDIT.md` — D6 updated to FIXED (interim) with full investigation + evidence.
+
+### Root cause confirmed
+- `Kreuz_*_See` etc. are OMSI intelligent crossings: o3d parses byte-perfectly
+  (raw decode verified, single mesh, identity matrix, unit normals, coherent
+  indices gap 3.4). `[rendertype] surface` template deformed at runtime by the
+  attached roads → static render is a spike. Not a parser bug.
+
+### Build results
+- `npm run build`: clean.
+
+### Tests executed (actual results)
+- Correlation sweep over 13,080 `.sco`: dual-gate catches 35 meshes, ALL
+  crossings/platforms (`Kreuz_*`/`Einm_*`/`Checkpoint_*`/`Falkensee_Bahnsteig`);
+  0 legitimate objects caught; 0 large non-cube surface objects missed.
+- Berlin-Spandau 60-tile slice: giant spike **gone**, scene clean; skip warnings
+  logged per crossing. Grundorf junctions (<120m) unaffected.
+
+### Known limitations
+- Interim: crossing templates render as a small placeholder box, not their real
+  (road-deformed) surface. Proper fix = implement crossing deformation (queued).
+
+### Next highest-priority task
+- D4 (culling for full large maps) or crossing deformation (full D6).
+
+---
+
 ## Session 2026-10-16 (D3 — o3d v5 material chunk + transform matrix)
 
 ### Files changed
