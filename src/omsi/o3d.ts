@@ -121,8 +121,11 @@ export function parseO3D(buf: ArrayBuffer): O3DMesh | null {
 
   // --- materials (chunk 0x26) ---
   let materials: O3DMaterial[];
+  let matEnd = u8.length; // konec materiálů (= možný začátek matice 0x79)
   if (chosen && u8[matOff] === MAT_TAG) {
-    materials = readMaterials(dv, u8, matOff);
+    const r = readMaterials(dv, u8, matOff);
+    materials = r.materials;
+    matEnd = r.end;
   } else {
     // Nouzový režim: strukturu materiálů se nepodařilo potvrdit → vyškrábej
     // názvy textur jako ASCII (bez spolehlivého mapování na index).
@@ -130,6 +133,12 @@ export function parseO3D(buf: ArrayBuffer): O3DMesh | null {
       texture, diffuse: [0.8, 0.8, 0.8, 1] as [number, number, number, number],
     }));
   }
+
+  // --- transform matrix (chunk 0x79) ---
+  // Část meshů (křižovatky Einm_*_base ap.) je uložena v lokálním prostoru a do
+  // scény se umisťuje touto maticí. U většiny meshů je identita (no-op).
+  const matrix = readMatrixAt(dv, u8, matEnd);
+  if (matrix && !isIdentityMatrix(matrix)) applyMatrixToPositions(positions, V, matrix);
 
   return { positions, normals, uvs, indices, matIndex, materials, vertexCount: V, triangleCount: T };
 }
@@ -146,13 +155,19 @@ function indicesValid(dv: DataView, triStart: number, T: number, stride: number,
   return true;
 }
 
+const MATRIX_TAG = 0x79; // 4×4 transform. matice meshe (64 B) za materiály
+
 /** Ověří, že na offsetu `at` začíná platný materiálový chunk (0x26 + záznamy). */
 function validMaterialsAt(dv: DataView, u8: Uint8Array, at: number): boolean {
   if (u8[at] !== MAT_TAG) return false;
   let m = at + 1;
   if (m + 2 > u8.length) return false;
   const count = dv.getUint16(m, true); m += 2;
-  if (count < 1 || count > 256) return false;
+  if (count > 256) return false;
+  // Prázdný materiálový chunk (count=0) je platný – textury přijdou z .sco [matl].
+  // Potvrdíme ho tím, že hned za ním je matice (0x79) nebo konec souboru (jinak by
+  // to mohla být náhodná shoda bajtu 0x26 u špatně zvolené kombinace trojúhelníků).
+  if (count === 0) return m >= u8.length || u8[m] === MATRIX_TAG;
   if (m + 44 > u8.length) return false;
   // difuzní barva: rozumné hodnoty
   for (let k = 0; k < 4; k++) {
@@ -168,7 +183,8 @@ function validMaterialsAt(dv: DataView, u8: Uint8Array, at: number): boolean {
   return true;
 }
 
-function readMaterials(dv: DataView, u8: Uint8Array, at: number): O3DMaterial[] {
+/** Přečte materiály a vrátí i offset konce chunku (kde může začínat matice 0x79). */
+function readMaterials(dv: DataView, u8: Uint8Array, at: number): { materials: O3DMaterial[]; end: number } {
   const out: O3DMaterial[] = [];
   let m = at + 1;
   const count = dv.getUint16(m, true); m += 2;
@@ -183,7 +199,35 @@ function readMaterials(dv: DataView, u8: Uint8Array, at: number): O3DMaterial[] 
     if (len > 0 && m + len <= u8.length) { texture = asciiAt(u8, m, len).trim(); m += len; }
     out.push({ texture, diffuse });
   }
-  return out;
+  return { materials: out, end: m };
+}
+
+/** Přečte 4×4 matici z chunku 0x79 na offsetu `at` (row-major, 16 floatů), jinak null. */
+function readMatrixAt(dv: DataView, u8: Uint8Array, at: number): Float32Array | null {
+  if (u8[at] !== MATRIX_TAG || at + 1 + 64 > u8.length) return null;
+  const m = new Float32Array(16);
+  for (let i = 0; i < 16; i++) m[i] = dv.getFloat32(at + 1 + i * 4, true);
+  return m;
+}
+
+function isIdentityMatrix(m: Float32Array): boolean {
+  const I = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+  for (let i = 0; i < 16; i++) if (Math.abs(m[i] - I[i]) > 1e-4) return false;
+  return true;
+}
+
+/**
+ * Aplikuje 4×4 matici (DirectX row-major, řádkový vektor: world = local · M,
+ * translace v řádku 3) na pozice vrcholů. Mnoho meshů má identitu (no-op), část
+ * (např. křižovatky Einm_*_base) má posun/rotaci, bez níž se mesh vykreslí špatně.
+ */
+function applyMatrixToPositions(pos: Float32Array, V: number, m: Float32Array): void {
+  for (let i = 0; i < V; i++) {
+    const x = pos[i * 3], y = pos[i * 3 + 1], z = pos[i * 3 + 2];
+    pos[i * 3] = x * m[0] + y * m[4] + z * m[8] + m[12];
+    pos[i * 3 + 1] = x * m[1] + y * m[5] + z * m[9] + m[13];
+    pos[i * 3 + 2] = x * m[2] + y * m[6] + z * m[10] + m[14];
+  }
 }
 
 function asciiAt(u8: Uint8Array, off: number, len: number): string {

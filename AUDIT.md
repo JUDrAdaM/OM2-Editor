@@ -59,26 +59,42 @@ Berlin-Spandau matches the owner's reported reference (~369 tiles / 30,310 objec
 - **Verification:** Grundorf — select + drag + numeric field edit work with no
   full rebuild and no console errors.
 
-### D3 — o3d v5 material-chunk variant → wrong triangle combo → scrambled meshes  — ROOT-CAUSED, NOT YET FIXED
-- **Where:** `parseO3D` combo selection + `validMaterialsAt`/`readMaterials` (`src/omsi/o3d.ts`).
-- **Root cause (byte-level evidence, `Einm_CharlCh_Stendel_base.o3d`):** vertices
-  (V=44, uint32 count) and triangles (T=22, stride 8, uint32 count) parse
-  correctly and the material tag `0x26` sits exactly at the computed end
-  (offset `0x642`). But the bytes after `0x26` are **not** the assumed
-  `uint16 count + 11 floats + name` layout — the "count" reads 0 and the diffuse
-  floats read as garbage (the data is matrix-like). So `validMaterialsAt` rejects
-  the *correct* combo `[4,8]`; the parser falls back to `[2,8]` (uint16 count) →
-  triangle start shifted 2 bytes → scrambled geometry. Affects road junctions
-  (`Einm_*`, `Wende_*`), `*_base`/`*_hole`, and some addon meshes.
-- **Related:** Removing the old `looksCubeScrambled` box fallback (correctly —
-  it false-positived on square buildings, see git history) exposed these
-  genuinely-wrong meshes as spiky geometry instead of blank boxes.
-- **Severity:** Medium (minority of objects; buildings/most scenery correct).
-- **Next step:** Reverse-engineer the v5 material-chunk layout for these files
-  (compare `0x26` payload vs known-good `Haus01a.o3d`; the differing chunk looks
-  like a 4×4 matrix / `0x79`). Make combo selection robust (prefer uint32 counts
-  for version byte == 5; validate end-of-triangles against the *next tag* rather
-  than a strict material-layout check). Add a geometry-quality regression test.
+### D3 — o3d v5 empty-material chunk + ignored transform matrix → scrambled/misplaced meshes  — FIXED
+- **Where:** `parseO3D` / `validMaterialsAt` / `readMaterials` (`src/omsi/o3d.ts`).
+- **Root cause (byte-level evidence, `Einm_CharlCh_Stendel_base.o3d`):** two bugs.
+  1. The material chunk after `0x26` legitimately had **count 0** (textures come
+     from the `.sco` `[matl]`), immediately followed by a `0x79` matrix chunk
+     (`26 00 00 79 …`). `validMaterialsAt` required `count >= 1`, so it rejected
+     the *correct* triangle combo `[4,8]` and fell back to `[2,8]` → triangle
+     start shifted 2 bytes → scrambled geometry.
+  2. The `0x79` chunk is a **4×4 transform matrix** (row-major DirectX) that
+     positions the mesh. It was never read/applied. Identity for most meshes
+     (safe to have ignored) but non-identity for junction `*_base`/`*_hole`
+     pieces (e.g. translation 52,50 / −70,47), so those were misplaced.
+- **Fix:** `validMaterialsAt` accepts `count == 0` when the next byte is `0x79`
+  or EOF (keeps combo disambiguation strong). `readMaterials` returns its end
+  offset; `readMatrixAt` reads the `0x79` matrix and `applyMatrixToPositions`
+  applies non-identity matrices to vertices in `parseO3D`.
+- **Verification (fixed-parser replica over all Sceneryobjects):** fallback-combo
+  cases **35 → 10**; `Einm_CharlCh_Stendel_base` hedgehog **23% → 6%** (now
+  `fb=false`); **3,471** meshes have non-identity matrices now applied. Grundorf
+  renders unchanged (no scatter → matrix convention correct). Removing the old
+  `looksCubeScrambled` box fallback earlier exposed these; now fixed at the root.
+
+### D6 — Oversized / inflated-bbox meshes (e.g. `Kreuz_*_See` junctions)  — NEW, NOT YET FIXED
+- **Where:** some large o3d render as a spike/blob. Example
+  `Kreuz_Klost_Wilh_See.o3d`: parses cleanly (`fb=false`, identity matrix,
+  0% hedgehog) yet vertices span a **±170m cube in all three axes** including
+  vertical (z −172..166); 50% of verts are >80m from the median.
+- **Distinct from D3** (not a material-chunk/fallback case; predates the D3 fix).
+- **Scope:** a sweep for min-dimension >40m found 64/8000, but **most are
+  legitimate** large structures (high-rises `bw_hoch_*`, quarry `kamenolom`
+  347×83×302, bridge `mostm` 504×75×291). Only extreme cubic cases like
+  `Kreuz_*_See` look wrong. No reliable automatic separator yet.
+- **Next step:** determine whether these o3d use a sub-mesh/scale/second-chunk
+  layout the parser mishandles, or are genuinely authored large; compare a
+  `Kreuz_*_See` against a visually-correct large junction. Do **not** mask with a
+  size heuristic (would hide legitimate towers/bridges).
 
 ### D4 — No frustum culling / no visibility management  — NOT YET FIXED
 - **Where:** `src/viewport/viewport.ts` — `inst.frustumCulled = false`; no spatial

@@ -2,6 +2,40 @@
 
 See `AUDIT.md` for the full defect list and root-cause evidence.
 
+## Session 2026-10-16 (D3 — o3d v5 material chunk + transform matrix)
+
+### Files changed
+- `src/omsi/o3d.ts` — `validMaterialsAt` accepts empty (count=0) material chunks
+  gated on a following `0x79`/EOF; `readMaterials` returns its end offset; new
+  `readMatrixAt` / `isIdentityMatrix` / `applyMatrixToPositions`; `parseO3D`
+  reads the `0x79` transform matrix and applies non-identity matrices to verts.
+- `AUDIT.md` — D3 marked FIXED with verification; added D6 (oversized meshes).
+
+### Root causes confirmed (byte-level)
+- Empty material chunk (`26 00 00 79 …`) was rejected → wrong triangle combo →
+  scramble. The `0x79` 4×4 matrix was never applied → junction `*_base` misplaced.
+
+### Build results
+- `npm run build`: clean.
+
+### Tests executed (actual results)
+- Fixed-parser replica over all 8,000 Sceneryobjects o3d: fallback-combo
+  **35 → 10**; `matrixApplied=3,471`; parse errors unchanged (2 `badV`).
+- `Einm_CharlCh_Stendel_base` 23% → 6% hedgehog (`fb=false`); `Rominter_base`
+  into `fb=false` 0%. Haus01a/Stellwerk unchanged.
+- Grundorf in viewport: layout unchanged (matrix convention correct, no scatter);
+  no runtime errors. Berlin-Spandau 60-tile slice reloads fine.
+
+### Known limitations / remaining failures
+- D6: `Kreuz_*_See`-type junctions still render as a spike (vertices span ~340m
+  cube); separate anomaly, not the material-chunk bug. Documented in AUDIT.md.
+- 10 o3d still use fallback combo (down from 35); investigate remainder.
+
+### Next highest-priority task
+- D6 (oversized `Kreuz_*_See` meshes) OR D4 (culling for full large maps).
+
+---
+
 ## Session 2026-10-16 (audit + large-map stability, part 1)
 
 ### Files changed
