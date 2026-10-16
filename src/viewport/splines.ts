@@ -85,12 +85,14 @@ export function splineSteps(s: MapSpline): number {
 /** Body osy splajnu ve světových souřadnicích (pro výběrovou čáru i fallback). */
 export function splineCenterline(
   s: MapSpline, tileX: number, tileY: number,
-  heightAt: (lx: number, ly: number) => number, lift = 0.15
+  _heightAt: (lx: number, ly: number) => number, lift = 0.15
 ): THREE.Vector3[] {
+  // POZOR: s.z je ABSOLUTNÍ výška splajnu (≈ výška terénu, který je k silnici
+  // zarovnán), ne offset nad terén. Výška terénu se NEPŘIČÍTÁ (jinak levituje).
   const frames = splineFrames(s, splineSteps(s));
   return frames.map((f) => new THREE.Vector3(
     tileX * TILE_SIZE + f.lx,
-    s.z + f.hGrad + heightAt(f.lx, f.ly) + lift,
+    s.z + f.hGrad + lift,
     -(tileY * TILE_SIZE + f.ly)
   ));
 }
@@ -150,8 +152,7 @@ function splineMaterial(loaded: LoadedSpline, texIndex: number): THREE.MeshStand
  * a bezpečně disposovatelné; textury žijí v cache a nedisposují se).
  */
 export function buildSplineMesh(
-  loaded: LoadedSpline, s: MapSpline, tileX: number, tileY: number,
-  heightAt: (lx: number, ly: number) => number
+  loaded: LoadedSpline, s: MapSpline, tileX: number, tileY: number
 ): THREE.Mesh {
   const steps = splineSteps(s);
   const frames = splineFrames(s, steps);
@@ -175,10 +176,10 @@ export function buildSplineMesh(
         const f0 = frames[i], f1 = frames[i + 1];
         const base = b.pos.length / 3;
         // 4 vrcholy kvádru: (station i × bod a,c), (station i+1 × bod a,c)
-        pushVert(b, tileX, tileY, f0, a, baseZ, heightAt);
-        pushVert(b, tileX, tileY, f0, c, baseZ, heightAt);
-        pushVert(b, tileX, tileY, f1, a, baseZ, heightAt);
-        pushVert(b, tileX, tileY, f1, c, baseZ, heightAt);
+        pushVert(b, tileX, tileY, f0, a, baseZ);
+        pushVert(b, tileX, tileY, f0, c, baseZ);
+        pushVert(b, tileX, tileY, f1, a, baseZ);
+        pushVert(b, tileX, tileY, f1, c, baseZ);
         // dva trojúhelníky (DoubleSide → na winding nezáleží)
         b.idx.push(base, base + 2, base + 3, base, base + 3, base + 1);
       }
@@ -216,12 +217,12 @@ export function buildSplineMesh(
 function pushVert(
   b: { pos: number[]; uv: number[]; idx: number[] },
   tileX: number, tileY: number, f: SplineFrame, p: { x: number; z: number; u: number; vSlope: number },
-  baseZ: number, heightAt: (lx: number, ly: number) => number
+  baseZ: number
 ) {
   const lx = f.lx + f.rx * p.x;
   const ly = f.ly + f.ry * p.x;
-  // Výšku terénu bereme na ose splajnu (celý profil je tuhý, nezvlní se).
-  const h = baseZ + f.hGrad + heightAt(f.lx, f.ly) + p.z;
+  // s.z (baseZ) je ABSOLUTNÍ výška silnice; terén se NEPŘIČÍTÁ (zarovnaný k silnici).
+  const h = baseZ + f.hGrad + p.z;
   b.pos.push(tileX * TILE_SIZE + lx, h, -(tileY * TILE_SIZE + ly));
   b.uv.push(p.u, f.d * p.vSlope);
 }

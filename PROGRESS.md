@@ -2,6 +2,22 @@
 
 See `AUDIT.md` for the full defect list and root-cause evidence.
 
+## Session 2026-10-16 (D8 — spline height double-counts terrain → floating roads)
+
+- Symptom: roads/splines levitated (worst on hilly maps). Measured: spline `z`
+  is the **absolute** road height (≈ aligned terrain) — Grundorf splineZ≈terrain
+  (both ~0); Berlin-Spandau splineZ 32–37 m vs terrain 32–33 m. But the spline
+  mesh used `s.z + gradient + terrain_height + profile` → double-counted terrain,
+  so in Berlin-Spandau roads sat ~33 m above the ground. (Objects use `terrain +
+  o.z` with small relative `o.z`, so they were already grounded.)
+- Fix (`src/viewport/splines.ts`): spline height = `s.z + gradient + profile`
+  (no terrain term) in `buildSplineMesh`/`pushVert`/`splineCenterline`; removed
+  the now-unused `heightAt` plumbing; aligned the spline drag-plane to `s.z`.
+- Verified: Berlin-Spandau roads now sit flush on the terrain; Grundorf unchanged
+  (terrain ~0). Build clean.
+
+---
+
 ## Session 2026-10-16 (D7b — fix axis convention after unscramble)
 
 - Regression after D7: ~90% of models lay on their side / levitated. Cause:

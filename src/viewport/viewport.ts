@@ -302,7 +302,7 @@ export class Viewport {
         const loaded = this.loadedSplines.get(s.path);
         let obj: THREE.Object3D;
         if (loaded) {
-          obj = buildSplineMesh(loaded, s, t.tileX, t.tileY, (lx, ly) => tileHeight(t, lx, ly));
+          obj = buildSplineMesh(loaded, s, t.tileX, t.tileY);
         } else {
           obj = this.buildSpline(t, s);
         }
@@ -342,7 +342,7 @@ export class Viewport {
     const s = t.splines[splineIndex];
     const loaded = this.loadedSplines.get(s.path);
     const obj = loaded
-      ? buildSplineMesh(loaded, s, t.tileX, t.tileY, (lx, ly) => tileHeight(t, lx, ly))
+      ? buildSplineMesh(loaded, s, t.tileX, t.tileY)
       : this.buildSpline(t, s);
     obj.userData = { tileIndex, splineIndex };
     this.splineGroup.add(obj);
@@ -473,7 +473,8 @@ export class Viewport {
       const spline = this.currentMap.tiles[tileIndex].splines[splineIndex];
       this.selectSpline(tileIndex, splineIndex, spline);
       this.dragging = "spline"; this.dragMoved = false; this.controls.enabled = false;
-      this.dragPlane.constant = -(tileHeight(this.currentMap.tiles[tileIndex], spline.x, spline.y) + spline.z);
+      // Splajn se kreslí v absolutní výšce s.z (bez terénu) – rovina tažení taky.
+      this.dragPlane.constant = -spline.z;
       return;
     }
     this.clearSelection(true);
