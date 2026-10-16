@@ -11,6 +11,10 @@ import { ModelCache } from "./models";
 import type { AssetSource, LoadedModel } from "./models";
 import { SplineCache, buildSplineMesh, splineCenterline } from "./splines";
 import type { LoadedSpline } from "./splines";
+import { runPool } from "../util/async";
+
+/** Max. souběžně načítaných assetů (bounded pool – brání I/O zahlcení u velkých map). */
+const ASSET_CONCURRENCY = 24;
 
 function tileHeight(t: MapTile, x: number, y: number): number {
   return t.terrain ? terrainHeightAt(t.terrain, x, y) : 0;
@@ -44,6 +48,10 @@ export class Viewport {
   private splineGroup = new THREE.Group();
   private tileGroup = new THREE.Group();
   private pickables: Pickable[] = [];
+  /** Zpětný index: "tileIndex:objectIndex" → instance (mesh + slot) ve všech dílech modelu. */
+  private objInstances = new Map<string, { mesh: THREE.InstancedMesh; k: number; originRotY: number }[]>();
+  /** Zpětný index: "tileIndex:splineIndex" → mesh splajnu (pro cílený přestavec). */
+  private splineObjects = new Map<string, THREE.Object3D>();
   private highlight: THREE.LineSegments;
 
   private currentMap: OmsiMap | null = null;
@@ -154,10 +162,16 @@ export class Viewport {
     const paths = new Set<string>();
     for (const t of this.currentMap.tiles) for (const s of t.splines) if (s.path) paths.add(s.path);
     const list = [...paths];
-    await Promise.all(list.map(async (p) => {
-      const sp = await this.splineCache!.get(p);
-      if (token === this.splineLoadToken) this.loadedSplines.set(p, sp);
-    }));
+    // Bounded pool: nespouštět stovky souběžných čtení najednou.
+    await runPool(
+      list, ASSET_CONCURRENCY,
+      async (p) => {
+        const sp = await this.splineCache!.get(p);
+        if (token === this.splineLoadToken) this.loadedSplines.set(p, sp);
+      },
+      undefined,
+      () => token !== this.splineLoadToken
+    );
     if (token !== this.splineLoadToken) return;
     const ok = [...this.loadedSplines.values()].filter(Boolean).length;
     this.build();
@@ -172,10 +186,21 @@ export class Viewport {
     for (const t of this.currentMap.tiles) for (const o of t.objects) if (o.path) paths.add(o.path);
     const list = [...paths];
     this.onStatus?.(`Načítám ${list.length} modelů…`);
-    await Promise.all(list.map(async (p) => {
-      const m = await this.modelCache!.get(p);
-      if (token === this.loadToken) this.loadedModels.set(p, m);
-    }));
+    // Bounded pool: u velkých map (stovky unikátních .sco) jinak vznikne
+    // desetitisíce souběžných čtení → zahlcení I/O a pád. Postup hlásíme.
+    await runPool(
+      list, ASSET_CONCURRENCY,
+      async (p) => {
+        const m = await this.modelCache!.get(p);
+        if (token === this.loadToken) this.loadedModels.set(p, m);
+      },
+      (doneN, totalN) => {
+        if (token === this.loadToken && (doneN % 25 === 0 || doneN === totalN)) {
+          this.onStatus?.(`Načítám modely… ${doneN}/${totalN}`);
+        }
+      },
+      () => token !== this.loadToken
+    );
     if (token !== this.loadToken) return;
     const ok = [...this.loadedModels.values()].filter(Boolean).length;
     this.build();
@@ -190,6 +215,8 @@ export class Viewport {
     this.clearGroup(this.objectGroup);
     this.clearGroup(this.splineGroup);
     this.pickables = [];
+    this.objInstances.clear();
+    this.splineObjects.clear();
     this.selSplineLine = null;
 
     const tileMat = new THREE.MeshStandardMaterial({ color: 0x171d26, roughness: 1 });
@@ -235,6 +262,10 @@ export class Viewport {
           this.setObjMatrix(dummy, e.t, e.o, model.originRotY);
           inst.setMatrixAt(k, dummy.matrix);
           pmap.push({ tileIndex: e.tileIndex, objectIndex: e.objectIndex });
+          const key = `${e.tileIndex}:${e.objectIndex}`;
+          let arr = this.objInstances.get(key);
+          if (!arr) { arr = []; this.objInstances.set(key, arr); }
+          arr.push({ mesh: inst, k, originRotY: model.originRotY });
         });
         inst.instanceMatrix.needsUpdate = true;
         inst.frustumCulled = false;
@@ -277,8 +308,54 @@ export class Viewport {
         }
         obj.userData = { tileIndex: ti, splineIndex: si };
         this.splineGroup.add(obj);
+        this.splineObjects.set(`${ti}:${si}`, obj);
       }
     }
+  }
+
+  /** Cílený přesun jediného objektu (bez přestavby celé scény). */
+  private updateObjectInstance(tileIndex: number, objectIndex: number): boolean {
+    if (!this.currentMap) return false;
+    const arr = this.objInstances.get(`${tileIndex}:${objectIndex}`);
+    if (!arr || arr.length === 0) return false; // např. fallback box → nutná přestavba
+    const t = this.currentMap.tiles[tileIndex];
+    const o = t.objects[objectIndex];
+    const dummy = new THREE.Object3D();
+    for (const ent of arr) {
+      this.setObjMatrix(dummy, t, o, ent.originRotY);
+      ent.mesh.setMatrixAt(ent.k, dummy.matrix);
+      ent.mesh.instanceMatrix.needsUpdate = true;
+    }
+    return true;
+  }
+
+  /** Cílená přestavba jediného splajnu (bez přestavby celé scény). */
+  private updateSplineMesh(tileIndex: number, splineIndex: number): void {
+    if (!this.currentMap) return;
+    const key = `${tileIndex}:${splineIndex}`;
+    const old = this.splineObjects.get(key);
+    if (old) {
+      this.splineGroup.remove(old);
+      this.disposeObject3D(old);
+    }
+    const t = this.currentMap.tiles[tileIndex];
+    const s = t.splines[splineIndex];
+    const loaded = this.loadedSplines.get(s.path);
+    const obj = loaded
+      ? buildSplineMesh(loaded, s, t.tileX, t.tileY, (lx, ly) => tileHeight(t, lx, ly))
+      : this.buildSpline(t, s);
+    obj.userData = { tileIndex, splineIndex };
+    this.splineGroup.add(obj);
+    this.splineObjects.set(key, obj);
+  }
+
+  /** Uvolní geometrii/materiály jednoho objektu (jen vlastní, ne sdílené textury). */
+  private disposeObject3D(obj: THREE.Object3D) {
+    const m = obj as THREE.Mesh;
+    m.geometry?.dispose?.();
+    const mat = m.material as THREE.Material | THREE.Material[] | undefined;
+    if (Array.isArray(mat)) mat.forEach((x) => x.dispose?.());
+    else mat?.dispose?.();
   }
 
   private setObjMatrix(dummy: THREE.Object3D, t: MapTile, o: MapObject, originRotY: number) {
@@ -414,7 +491,9 @@ export class Viewport {
     if (this.selection.kind === "object") {
       setObjectField(t, this.selection.object, "x", lx);
       setObjectField(t, this.selection.object, "y", ly);
-      this.moveHighlightToObject(this.selection); // mesh se překreslí po puštění
+      // Živý cílený přesun instance (O(1)); fallback box se dorovná po puštění.
+      this.updateObjectInstance(this.selection.tileIndex, this.selection.objectIndex);
+      this.moveHighlightToObject(this.selection);
     } else {
       setSplineField(t, this.selection.spline, "x", lx);
       setSplineField(t, this.selection.spline, "y", ly);
@@ -425,11 +504,20 @@ export class Viewport {
 
   private onPointerUp = () => {
     if (!this.dragging) return;
-    const rebuild = this.dragMoved; // po přesunu přestav mesh objektu i splajnu
+    const moved = this.dragMoved;
+    const sel = this.selection;
     this.dragging = null;
     this.controls.enabled = true;
-    if (rebuild) { this.build(); this.restoreSelectionVisual(); }
-    if (this.dragMoved) this.onChange?.(this.selection);
+    if (moved && sel) {
+      // Cílená aktualizace jen dotčeného prvku (ne celá scéna).
+      if (sel.kind === "object") {
+        if (!this.updateObjectInstance(sel.tileIndex, sel.objectIndex)) this.build();
+      } else {
+        this.updateSplineMesh(sel.tileIndex, sel.splineIndex);
+      }
+      this.restoreSelectionVisual();
+      this.onChange?.(sel);
+    }
   };
 
   private raycastGround(): THREE.Vector3 | null {
@@ -534,13 +622,16 @@ export class Viewport {
   setSelectedObjectField(field: ObjField, value: number) {
     if (this.selection?.kind !== "object" || !this.currentMap) return;
     setObjectField(this.currentMap.tiles[this.selection.tileIndex], this.selection.object, field, value);
-    this.build(); this.restoreSelectionVisual();
+    // Cílený přesun instance; jen pokud objekt není instancovaný (box), přestav vše.
+    if (!this.updateObjectInstance(this.selection.tileIndex, this.selection.objectIndex)) this.build();
+    this.restoreSelectionVisual();
     this.onChange?.(this.selection);
   }
   setSelectedSplineField(field: SplField, value: number) {
     if (this.selection?.kind !== "spline" || !this.currentMap) return;
     setSplineField(this.currentMap.tiles[this.selection.tileIndex], this.selection.spline, field, value);
-    this.build(); this.restoreSelectionVisual();
+    this.updateSplineMesh(this.selection.tileIndex, this.selection.splineIndex);
+    this.restoreSelectionVisual();
     this.onChange?.(this.selection);
   }
   rotateSelected(deltaDeg: number) {
