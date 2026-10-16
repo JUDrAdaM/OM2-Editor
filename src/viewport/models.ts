@@ -108,7 +108,7 @@ function applyAlpha(mat: THREE.MeshStandardMaterial, mode: AlphaMode) {
   }
 }
 
-/** Vstupní prostor meshe: o3d = Z-up (OMSI), xmesh = Y-up (DirectX po frame maticích). */
+/** Vstupní prostor meshe: o3d i xmesh jsou Y-up (DirectX). Vertikála = coord1 (Y). */
 type MeshSpace = "o3d" | "xmesh";
 
 /** Postaví geometrii; zapeče origin (trans+rot) a seskupí trojúhelníky dle materiálu. */
@@ -124,10 +124,10 @@ function buildGeometry(mesh: O3DMesh, originTrans: [number, number, number], ori
       // už Y-up (levotočivý DirectX) → jen převrácení Z na pravotočivý
       pos[i * 3] = mx0 + ox; pos[i * 3 + 1] = my0 + oz; pos[i * 3 + 2] = -(mz0 + oy);
     } else {
-      // rotace kolem svislé osy (Z v mesh-space), pak posun originu, pak Z-up → Y-up
-      const rx = mx0 * cos - my0 * sin, ry = mx0 * sin + my0 * cos;
-      const mx = rx + ox, my = ry + oy, mz = mz0 + oz;
-      pos[i * 3] = mx; pos[i * 3 + 1] = mz; pos[i * 3 + 2] = -my;
+      // o3d (odscramblované) = Y-up DirectX: vertikála = coord1 (Y). origin_rot_y
+      // rotuje kolem svislé osy (Y) → horizontální rovina (x,z). Z → pravotočivý.
+      const rx = mx0 * cos + mz0 * sin, rz = -mx0 * sin + mz0 * cos;
+      pos[i * 3] = rx + ox; pos[i * 3 + 1] = my0 + oy; pos[i * 3 + 2] = -(rz + oz);
     }
   }
 

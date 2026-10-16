@@ -2,6 +2,20 @@
 
 See `AUDIT.md` for the full defect list and root-cause evidence.
 
+## Session 2026-10-16 (D7b — fix axis convention after unscramble)
+
+- Regression after D7: ~90% of models lay on their side / levitated. Cause:
+  unscrambled o3d is OMSI-native **Y-up (DirectX)** (the crossing's flat axis is
+  Y), but `buildGeometry`'s o3d branch still mapped the vertical from coord2
+  (the old Z-up assumption that matched the *scrambled* raw data).
+- Fix (`src/viewport/models.ts` `buildGeometry`): o3d branch now treats data as
+  Y-up — vertical = coord1, `origin_rot_y` rotates the (x,z) horizontal plane,
+  Z negated for right-handedness (same convention as the xmesh/.x branch).
+- Verified: Grundorf & Berlin-Spandau — buildings upright and grounded, roofs
+  correct, crossings flat; no sideways/levitating models. Build clean.
+
+---
+
 ## Session 2026-10-16 (D7 — o3d per-vertex unscramble; root cause of D3/D6)
 
 ### What was really wrong
