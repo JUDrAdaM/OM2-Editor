@@ -12,7 +12,8 @@
     "electron": "electron .",
     "electron:dev": "node scripts/dev.mjs",
     "dist": "npm run build && electron-builder",
-    "dist:dir": "npm run build && electron-builder --dir"
+    "dist:dir": "npm run build && electron-builder --dir",
+    "release": "npm run build && electron-builder --publish always"
   },
   "devDependencies": {
     "@types/three": "^0.169.0",
@@ -22,11 +23,12 @@
     "vite": "^5.4.10"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "three": "^0.169.0"
   },
   "build": {
-    "appId": "com.omsi2.mapeditor",
-    "productName": "OMSI 2 Map Editor",
+    "appId": "com.omsi2.om2editor",
+    "productName": "OM2-Editor",
     "files": [
       "dist/**/*",
       "electron/**/*"
@@ -34,6 +36,13 @@
     "directories": {
       "output": "release"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "JUDrAdaM",
+        "repo": "OM2-Editor"
+      }
+    ],
     "win": {
       "target": [
         "nsis",
@@ -42,7 +51,8 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "OM2-Editor-Setup-${version}.${ext}"
     }
   }
 }

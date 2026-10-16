@@ -3,24 +3,51 @@ import type { OmsiMap } from "../omsi/types";
 import type { AssetSource } from "../viewport/models";
 
 // Most do Electronu (viz electron/preload.cjs). V prohlížeči je undefined.
+type MapFolderResult =
+  | null
+  | { error: string }
+  | {
+      rootName: string;
+      rootPath: string;
+      globalText: string;
+      tiles: Record<string, string>;
+      terrains: Record<string, Uint8Array>;
+    };
+
+export interface OmsiMapEntry {
+  folder: string;
+  name: string;
+  tileCount: number;
+}
+
+export interface UpdateStatus {
+  state: "checking" | "available" | "none" | "downloading" | "downloaded" | "error";
+  version?: string;
+  percent?: number;
+  message?: string;
+}
+
 interface OmsiAPI {
   isElectron: boolean;
-  openMapFolder: () => Promise<
-    | null
-    | { error: string }
-    | {
-        rootName: string;
-        rootPath: string;
-        globalText: string;
-        tiles: Record<string, string>;
-        terrains: Record<string, Uint8Array>;
-      }
-  >;
+  getRoot?: () => Promise<{ root: string | null }>;
+  pickRoot?: () => Promise<{ root?: string | null; error?: string }>;
+  listMaps?: (
+    omsiRoot: string | null
+  ) => Promise<{ root?: string | null; maps: OmsiMapEntry[]; error?: string }>;
+  openMapByFolder?: (
+    omsiRoot: string | null,
+    folder: string
+  ) => Promise<MapFolderResult | { error: string }>;
+  openMapFolder: () => Promise<MapFolderResult>;
   saveTiles: (
     rootPath: string,
     tiles: { fileName: string; content: string }[]
   ) => Promise<{ error?: string; saved?: number }>;
   readAsset?: (omsiRoot: string, relPath: string) => Promise<Uint8Array | null>;
+  getVersion?: () => Promise<string>;
+  checkUpdate?: () => Promise<{ ok: boolean; message?: string }>;
+  installUpdate?: () => Promise<{ ok: boolean }>;
+  onUpdateStatus?: (cb: (s: UpdateStatus) => void) => () => void;
 }
 declare global {
   interface Window {
@@ -64,26 +91,77 @@ async function readFileText(handle: FileSystemFileHandle): Promise<string> {
   return decodeOmsi(buf);
 }
 
+/** Je aplikace spuštěná jako desktop (Electron)? */
+export function isElectronApp(): boolean {
+  return !!window.omsiAPI?.isElectron;
+}
+
+/** Vrátí detekovaný / uložený kořen OMSI 2 (nebo null). */
+export async function getOmsiRoot(): Promise<string | null> {
+  if (!window.omsiAPI?.getRoot) return null;
+  const r = await window.omsiAPI.getRoot();
+  return r.root;
+}
+
+/** Nechá uživatele ručně vybrat kořen OMSI 2 (uloží se). */
+export async function pickOmsiRoot(): Promise<string | null> {
+  if (!window.omsiAPI?.pickRoot) return null;
+  const r = await window.omsiAPI.pickRoot();
+  if (r.error) throw new Error(r.error);
+  return r.root ?? null;
+}
+
+/** Seznam map pod <root>/maps. */
+export async function listOmsiMaps(
+  omsiRoot: string | null
+): Promise<{ root: string | null; maps: OmsiMapEntry[] }> {
+  if (!window.omsiAPI?.listMaps) return { root: null, maps: [] };
+  const r = await window.omsiAPI.listMaps(omsiRoot);
+  if (r.error && (!r.maps || r.maps.length === 0)) {
+    return { root: r.root ?? null, maps: [] };
+  }
+  return { root: r.root ?? omsiRoot, maps: r.maps ?? [] };
+}
+
+/** Postaví OmsiMap z výsledku čtení složky (Electron IPC). */
+function buildFromFolderResult(data: Exclude<MapFolderResult, null | { error: string }>): OmsiMap {
+  dirHandle = null;
+  const terrains = new Map<string, ArrayBuffer>();
+  for (const [name, bytes] of Object.entries(data.terrains ?? {})) {
+    const u8 = bytes as Uint8Array;
+    const ab = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
+    terrains.set(name, ab);
+  }
+  return buildMap(
+    data.rootName,
+    data.globalText,
+    new Map(Object.entries(data.tiles)),
+    data.rootPath,
+    terrains
+  );
+}
+
+/** Otevře mapu podle názvu složky pod <root>/maps (desktop). */
+export async function openMapByFolder(
+  omsiRoot: string | null,
+  folder: string
+): Promise<OmsiMap> {
+  if (!window.omsiAPI?.openMapByFolder) {
+    throw new Error("Tato funkce je dostupná jen v desktop aplikaci.");
+  }
+  const data = await window.omsiAPI.openMapByFolder(omsiRoot, folder);
+  if (!data) throw new Error("Mapu se nepodařilo načíst.");
+  if ("error" in data) throw new Error(data.error);
+  return buildFromFolderResult(data);
+}
+
 /** Otevře složku mapy OMSI 2 a vrátí rozparsovaný model. */
 export async function openMapFolder(): Promise<OmsiMap | null> {
   if (window.omsiAPI?.isElectron) {
     const data = await window.omsiAPI.openMapFolder();
     if (!data) return null;
     if ("error" in data) throw new Error(data.error);
-    dirHandle = null;
-    const terrains = new Map<string, ArrayBuffer>();
-    for (const [name, bytes] of Object.entries(data.terrains ?? {})) {
-      const u8 = bytes as Uint8Array;
-      const ab = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
-      terrains.set(name, ab);
-    }
-    return buildMap(
-      data.rootName,
-      data.globalText,
-      new Map(Object.entries(data.tiles)),
-      data.rootPath,
-      terrains
-    );
+    return buildFromFolderResult(data);
   }
 
   const picker = (window as unknown as {

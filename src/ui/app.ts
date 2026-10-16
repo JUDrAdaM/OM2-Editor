@@ -21,6 +21,9 @@ function baseName(p: string): string {
 }
 
 export class EditorApp {
+  /** Zavolá se při kliknutí na „Menu" – shell přepne na úvodní obrazovku. */
+  onBackToMenu: (() => void) | null = null;
+
   private viewport!: Viewport;
   private map: OmsiMap | null = null;
 
@@ -41,7 +44,9 @@ export class EditorApp {
     // --- Toolbar ---
     const toolbar = el("header", "toolbar");
     const brand = el("div", "brand");
-    brand.append(el("span", "brand-mark", "◆"), el("span", "brand-name", "OMSI 2 Map Editor"));
+    brand.append(el("span", "brand-mark", "◆"), el("span", "brand-name", "OM2-Editor"));
+    const menuBtn = el("button", "btn", "☰ Menu");
+    menuBtn.addEventListener("click", () => this.onBackToMenu?.());
     const openBtn = el("button", "btn btn-primary", "Otevřít mapu…");
     openBtn.addEventListener("click", () => this.handleOpen());
     const demoBtn = el("button", "btn", "Demo mapa");
@@ -50,7 +55,7 @@ export class EditorApp {
     this.saveBtn.addEventListener("click", () => this.handleSave());
     this.mapNameEl = el("div", "map-name", "—");
     this.statsEl = el("div", "stats", "");
-    toolbar.append(brand, openBtn, demoBtn, this.saveBtn, this.mapNameEl, el("div", "spacer"), this.statsEl);
+    toolbar.append(brand, menuBtn, openBtn, demoBtn, this.saveBtn, this.mapNameEl, el("div", "spacer"), this.statsEl);
 
     // --- Body ---
     const body = el("div", "body");
@@ -109,13 +114,22 @@ export class EditorApp {
 
     window.addEventListener("keydown", this.onKeyDown);
     this.renderInspector(null);
+  }
 
+  /** DEV náhled z URL (?omsimap=… / ?map=…). Vrátí true, pokud něco načetl. */
+  tryLoadFromUrlParams(): boolean {
     const params = new URLSearchParams(location.search);
     const mapUrl = params.get("map");
     const omsiMap = params.get("omsimap");
-    if (omsiMap) this.loadMapFromOmsiFolder(omsiMap, Number(params.get("max")) || 25);
-    else if (mapUrl) this.loadMapFromUrl(mapUrl);
-    else this.loadMap(createDemoMap(), "Načtena demo mapa – otevři reálnou mapu tlačítkem Otevřít mapu.");
+    if (omsiMap) {
+      this.loadMapFromOmsiFolder(omsiMap, Number(params.get("max")) || 25);
+      return true;
+    }
+    if (mapUrl) {
+      this.loadMapFromUrl(mapUrl);
+      return true;
+    }
+    return false;
   }
 
   // ---------- Načítání ----------
@@ -153,7 +167,7 @@ export class EditorApp {
     }
   }
 
-  private loadMap(map: OmsiMap, status: string) {
+  loadMap(map: OmsiMap, status: string) {
     this.map = map;
     this.viewport.setAssetSource(createAssetSource(map));
     this.viewport.setMap(map);
