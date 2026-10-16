@@ -156,38 +156,6 @@ function buildGeometry(mesh: O3DMesh, originTrans: [number, number, number], ori
   return geo;
 }
 
-/** Rozměry (šířka v každé ose) bounding boxu meshe v jeho vstupním prostoru. */
-function meshDims(mesh: O3DMesh): [number, number, number] {
-  const min = [Infinity, Infinity, Infinity];
-  const max = [-Infinity, -Infinity, -Infinity];
-  for (let i = 0; i < mesh.vertexCount; i++) {
-    for (let k = 0; k < 3; k++) {
-      const v = mesh.positions[i * 3 + k];
-      if (v < min[k]) min[k] = v;
-      if (v > max[k]) max[k] = v;
-    }
-  }
-  return [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
-}
-
-/**
- * OMSI „inteligentní křižovatky" (Kreuzung, rendertype=surface) jsou šablony,
- * které hra za běhu DEFORMUJE podle připojených silnic. Jejich o3d je uloženo
- * ve velkém šablonovém prostoru (vrcholy ~±160 m ve všech osách) – staticky
- * vykreslené vypadá jako obří „jehlan". Bez systému deformace křižovatek je
- * nelze vykreslit správně; poznáme je podle rendertype=surface A nepravděpodobně
- * velkého, téměř krychlového bboxu (všechny osy > 120 m a poměr < 1.6). Žádný
- * reálný statický objekt tomu neodpovídá (věžáky/mosty nejsou krychle, budovy
- * nemají rendertype). Takový mesh nevykreslíme (objekt zůstane v mapě/stromu).
- */
-function isDeformedCrossingTemplate(mesh: O3DMesh, rendertype: string): boolean {
-  if (rendertype !== "surface") return false;
-  const [dx, dy, dz] = meshDims(mesh);
-  const mn = Math.min(dx, dy, dz), mx = Math.max(dx, dy, dz);
-  if (!Number.isFinite(mn) || mn <= 0) return false;
-  return mn > 120 && mx / mn < 1.6;
-}
-
 /** Načte mesh objektu: nejdřív zkompilovaný .o3d, při selhání textový .x. */
 async function loadMesh(src: AssetSource, scoDir: string, file: string): Promise<{ mesh: O3DMesh; space: MeshSpace } | null> {
   const stem = baseOf(file).replace(/\.[^.]+$/, "");
@@ -323,16 +291,6 @@ export async function loadModel(src: AssetSource, scoPath: string): Promise<Load
   for (const meshDef of sco.meshes) {
     const loaded = await loadMesh(src, scoDir, meshDef.file);
     if (!loaded) continue;
-    // Deformovaná křižovatka (surface): šablonu staticky nevykreslíme (viz funkce).
-    // Správné vykreslení vyžaduje OMSI systém deformace křižovatek (fold šablony
-    // podle [path]/[crossing_heightdeformation]) – dokud není, radši placeholder.
-    if (loaded.space === "o3d" && isDeformedCrossingTemplate(loaded.mesh, sco.rendertype)) {
-      console.warn(
-        `[OM2] Vynechán šablonový mesh křižovatky (rendertype=surface, bbox ~`
-        + `${meshDims(loaded.mesh).map((n) => n.toFixed(0)).join("×")} m): ${scoPath}`
-      );
-      continue;
-    }
     const origin: [number, number, number] = loaded.space === "o3d" ? meshDef.originTrans : [0, 0, 0];
     const rotY = loaded.space === "o3d" ? meshDef.originRotY : 0;
     const materials = await buildMaterials(src, scoDir, loaded.mesh, meshDef.matls);

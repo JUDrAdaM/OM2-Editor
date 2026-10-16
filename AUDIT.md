@@ -59,7 +59,34 @@ Berlin-Spandau matches the owner's reported reference (~369 tiles / 30,310 objec
 - **Verification:** Grundorf — select + drag + numeric field edit work with no
   full rebuild and no console errors.
 
-### D3 — o3d v5 empty-material chunk + ignored transform matrix → scrambled/misplaced meshes  — FIXED
+### D7 — o3d v4+ per-vertex scrambling not undone → wrong geometry everywhere (root cause of D3/D6)  — FIXED
+- **What it is:** OMSI `.o3d` files of version ≥ 4 carry a `key` (bytes 4–7) and,
+  unless it is `0xFFFFFFFF`, **obfuscate every vertex**: per-vertex position-axis
+  swaps, normal negations and UV tweaks, driven by a state seeded from the key
+  and mixed with each vertex's own data. The previous parser read vertices **raw**
+  (and only guessed chunk widths), so near-symmetric meshes (most buildings)
+  looked roughly right while asymmetric ones (crossing plates) came out as a
+  "cube"/spike. This is the real root cause behind D3 and D6.
+- **Fix (`src/omsi/o3d.ts`, full rewrite):** deterministic port of openOMSI's
+  `omsi-o3d` parser — magic `84 19`, version/flags/key header, count widths from
+  the version (no probing), `0x49/0x26/0x79/0x54` chunks, the `0x79` transform,
+  and the exact `unscramble(state, …)` per vertex (`fracByte` mixing). Replaces
+  all the old heuristics (combo probing, `validMaterialsAt`, the empty-material
+  special-case, ASCII texture scraping).
+- **Verification (fixed-parser replica):** Sceneryobjects **8,997/9,000 parse**;
+  **5,849** meshes now correctly flat; remaining large near-cubes drop to **8 —
+  all genuine towers** (`Spiegelturm`, `Plattenbau_*`, 3dstudio houses). Vehicles
+  (v7) **2,500/2,500** parse (old parser failed 8). `Kreuz_Klost_Wilh_See`:
+  340 m cube → **341 × 0.2 × 93 m flat plate**; `Haus01a` → a correct 9.4×10.2×
+  12.3 m house. Grundorf & Berlin-Spandau render correctly (detailed buildings,
+  flat crossings, no spikes); no runtime errors.
+- **Supersedes:** D3's empty-material/matrix fix (now subsumed by the correct
+  deterministic parser) and D6's crossing suppression (removed — crossings are
+  real flat plates now). Full crossing *height* deformation (`warp_crossings`:
+  raise each vertex by `[crossing_heightdeformation]`'s field so arms meet their
+  roads) remains a later refinement; the flat plate already renders correctly.
+
+### D3 — o3d v5 empty-material chunk + ignored transform matrix (SUBSUMED BY D7)  — FIXED
 - **Where:** `parseO3D` / `validMaterialsAt` / `readMaterials` (`src/omsi/o3d.ts`).
 - **Root cause (byte-level evidence, `Einm_CharlCh_Stendel_base.o3d`):** two bugs.
   1. The material chunk after `0x26` legitimately had **count 0** (textures come
@@ -81,7 +108,7 @@ Berlin-Spandau matches the owner's reported reference (~369 tiles / 30,310 objec
   renders unchanged (no scatter → matrix convention correct). Removing the old
   `looksCubeScrambled` box fallback earlier exposed these; now fixed at the root.
 
-### D6 — OMSI intelligent-crossing templates rendered as spikes  — FIXED (interim; full fix = crossing deformation)
+### D6 — Crossing "spikes" (RESOLVED BY D7: was raw per-vertex scramble, not a separate format)  — FIXED
 - **What it is (investigation conclusion):** objects like `Kreuz_Klost_Wilh_See`
   are OMSI **intelligent crossings** (Kreuzungen) / platforms. The o3d parses
   **byte-perfectly** (verified: raw float decode matches, single mesh chunk,

@@ -2,6 +2,43 @@
 
 See `AUDIT.md` for the full defect list and root-cause evidence.
 
+## Session 2026-10-16 (D7 — o3d per-vertex unscramble; root cause of D3/D6)
+
+### What was really wrong
+- OMSI `.o3d` v4+ obfuscate every vertex (key-seeded per-vertex axis swaps +
+  normal flips + UV tweaks). The old parser read vertices raw and guessed chunk
+  widths, so asymmetric meshes (crossing plates) became "cubes"/spikes and all
+  buildings were subtly wrong. Found via the openOMSI (Rust) reimplementation.
+
+### Files changed
+- `src/omsi/o3d.ts` — full rewrite: deterministic port of openOMSI's `omsi-o3d`
+  (header/version/flags/key, fixed count widths, `0x17/0x49/0x26/0x79/0x54`
+  chunks, exact `unscramble`/`fracByte`, transform). Removed all heuristics.
+- `src/viewport/models.ts` — removed the crossing-suppression workaround
+  (crossings now render as correct flat plates).
+- `src/omsi/sco.ts` — reverted the now-unneeded `[rendertype]` parsing.
+- `AUDIT.md` — added D7 (supersedes D3/D6).
+
+### Build: clean.
+
+### Tests executed (actual results)
+- Fixed-parser replica over 9,000 Sceneryobjects o3d: 8,997 parse; 5,849 now
+  flat; remaining large near-cubes drop to 8 — all genuine towers. Vehicles (v7)
+  2,500/2,500 (old parser failed 8). `Kreuz_Klost_Wilh_See` 340 m cube →
+  341×0.2×93 m flat plate; `Haus01a` → correct 9.4×10.2×12.3 m house.
+- Grundorf viewport: detailed correctly-sized buildings, flat crossings, no
+  spikes/boxes; 110/110 models; no runtime errors.
+- Berlin-Spandau 60-tile slice: 545/550 models, city renders correctly, the
+  former giant spike is now a flat crossing surface.
+
+### Known limitations / next
+- Crossings render as flat plates but are not yet height-warped to meet their
+  roads precisely (openOMSI `warp_crossings`: add `[crossing_heightdeformation]`
+  field per vertex) — a later refinement.
+- D4 (culling for full large maps) still pending.
+
+---
+
 ## Session 2026-10-16 (D6b — crossing deformation attempt)
 
 Goal: render crossings correctly instead of the placeholder box.

@@ -41,8 +41,6 @@ export interface ScoInfo {
   meshes: ScoMesh[];
   /** Billboard stromy ([tree]); pokud je neprázdné, objekt se kreslí jako billboard. */
   trees: ScoTree[];
-  /** Hodnota [rendertype] (např. "surface" = terénem deformovaná křižovatka/plocha). */
-  rendertype: string;
 }
 
 /**
@@ -57,16 +55,12 @@ export function parseSco(text: string): ScoInfo {
   const trees: ScoTree[] = [];
   let currentLod = Infinity;
   let cur: ScoMesh | null = null;
-  let rendertype = "";
 
   const firstVal = (s: { values: string[] }) => s.values.find((v) => v.trim().length > 0)?.trim();
 
   for (const s of sections) {
     const n = s.name.toLowerCase();
-    if (n === "rendertype") {
-      const v = firstVal(s);
-      if (v) rendertype = v.toLowerCase();
-    } else if (n === "lod") {
+    if (n === "lod") {
       const v = firstVal(s);
       currentLod = v != null ? (parseFloat(v) || 0) : Infinity;
     } else if (n === "mesh") {
@@ -117,12 +111,12 @@ export function parseSco(text: string): ScoInfo {
     }
   }
 
-  if (all.length === 0) return { meshes: [], trees, rendertype };
+  if (all.length === 0) return { meshes: [], trees };
 
   // Vyber nejvyšší detail: skupina meshů s nejvyšší LOD hodnotou.
   // (Bez [LOD] mají všechny Infinity → vezmou se všechny.)
   let maxLod = -Infinity;
   for (const m of all) if (m.lod > maxLod) maxLod = m.lod;
   const meshes = all.filter((m) => m.lod === maxLod);
-  return { meshes, trees, rendertype };
+  return { meshes, trees };
 }
