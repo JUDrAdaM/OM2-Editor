@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "description": "Moderní 3D editor map pro OMSI 2",
+  "author": "JUDrAdaM",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JUDrAdaM/OM2-Editor.git"
+  },
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
