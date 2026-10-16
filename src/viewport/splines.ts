@@ -69,8 +69,18 @@ export function splineFrames(s: MapSpline, steps: number): SplineFrame[] {
     }
     // Příčný vektor „vpravo" kolmý na tečnu (tečna = (sin th, cos th)).
     const rx = Math.cos(th), ry = -Math.sin(th);
-    // Výška: integrál lineárně interpolovaného sklonu (procenta) po délce d.
-    const hGrad = (s.gradientStart * d + ((s.gradientEnd - s.gradientStart) * d * d) / (2 * L)) / 100;
+    // Výška nad s.z. [spline_h]: kubika s h'(0)=gS, h'(L)=gE, h(L)=deltaH (přesně
+    // navazuje na další splajn). Jinak parabola (integrál lineárního sklonu).
+    const g = s.gradientStart / 100, G = s.gradientEnd / 100;
+    let hGrad: number;
+    if (s.deltaH != null) {
+      const dh = s.deltaH;
+      const c = (G - g - (2 * (dh - g * L)) / L) / (L * L);
+      const b = (dh - g * L) / (L * L) - c * L;
+      hGrad = g * d + b * d * d + c * d * d * d;
+    } else {
+      hGrad = (s.gradientStart * d + ((s.gradientEnd - s.gradientStart) * d * d) / (2 * L)) / 100;
+    }
     frames.push({ lx, ly, hGrad, rx, ry, d });
   }
   return frames;

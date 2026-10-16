@@ -73,6 +73,8 @@ function deriveSpline(section: OmsiSection, sectionIndex: number): MapSpline | n
   const pathIndex = findPathLine(section.values, ".sli");
   if (pathIndex < 0) return null;
   const v = section.values;
+  // [spline_h] má po gradientech navíc jedno pole: celkové převýšení (delta_h).
+  const isH = section.name.toLowerCase() === "spline_h";
   return {
     id: toInt(v[pathIndex + SPL.id]),
     prevId: toInt(v[pathIndex + SPL.prevId]),
@@ -86,6 +88,7 @@ function deriveSpline(section: OmsiSection, sectionIndex: number): MapSpline | n
     radius: num(v[pathIndex + SPL.radius]),
     gradientStart: num(v[pathIndex + SPL.gradS]),
     gradientEnd: num(v[pathIndex + SPL.gradE]),
+    deltaH: isH ? num(v[pathIndex + SPL.gradE + 1]) : null,
     sectionIndex,
     pathIndex,
   };

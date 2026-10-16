@@ -18,9 +18,12 @@ Berlin-Spandau, Lisen).
 - Verified visually: Grundorf and Berlin-Spandau now render a connected road
   network with correct curves/junctions; no scattered objects.
 
+### Also fixed (same session)
+- `[spline_h]` height now uses the cubic `delta_h` (h'(0)=gS, h'(L)=gE,
+  h(L)=Z+delta_h). Measured end-height vs next.Z on Berlin: parabola max 12.0 m
+  → delta_h max 0.0 m. Added `MapSpline.deltaH`, parsed from spline_h records.
+
 ### Known limitations / next
-- `[spline_h]` height (`delta_h`, cubic) not yet used — 493/646 such splines on
-  Berlin/Lisen; plain gradient parabola may leave small height steps.
 - `[splineAttachement]`/`[attachObj]` objects undrawn (lamps, masts, attached
   signs). Cross-tile spline connection: a minority still off (Berlin p90 ~72 m)
   — investigate (tile-grid offset / chain semantics).

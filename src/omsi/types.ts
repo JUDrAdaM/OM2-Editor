@@ -64,6 +64,9 @@ export interface MapSpline {
   /** Převýšení (gradient) start/end. */
   gradientStart: number;
   gradientEnd: number;
+  /** [spline_h]: celkové převýšení po délce (metry). Výška běží jako kubika mezi
+   *  oběma gradienty a končí přesně o tolik výš. null = běžný [spline] (parabola). */
+  deltaH: number | null;
   sectionIndex: number;
   pathIndex: number;
 }
