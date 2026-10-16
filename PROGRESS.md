@@ -2,6 +2,40 @@
 
 See `AUDIT.md` for the full defect list and root-cause evidence.
 
+## Session 2026-10-16 (D6b — crossing deformation attempt)
+
+Goal: render crossings correctly instead of the placeholder box.
+
+### Investigation
+- Web research: crossings use `[crossing_heightdeformation]` ("folds the base
+  tarpaulin along its paths") + `[path]`/`[splinehelper]` connection data; the
+  exact field semantics and algorithm are undocumented (openOMSI has a port).
+- Real data (`Kreuz_Klost_Wilh_See.sco`): 6 `[splinehelper]` + 13 `[path]`
+  blocks. Splinehelper connection points are at ±165 (e.g. X=164.9, Z=−4.1) —
+  the **same space as the mesh** — with heights ~0; path points similar. So the
+  template's horizontal footprint is large and its ±160 m vertical is the
+  undeformed "tarpaulin" to be folded.
+- The object itself is placed correctly by our map parsing (box appears in the
+  right spot); only the mesh shape/size is template-space.
+
+### Attempt (and result)
+- Tried a height-flatten approximation (collapse up-axis to ground) and rendered
+  Berlin-Spandau. It removed the spike but produced **messy geometry** (collapsed
+  central vertices → overlapping degenerate triangles) and its horizontal
+  footprint / terrain fit are **unverifiable** without the real deformation.
+- Per rules 3/10/12/18 (no unverifiable simplified geometry), **reverted** to the
+  clean, verified suppression. Kept a clarifying code comment.
+
+### Conclusion / next step
+- Correct crossing rendering requires implementing OMSI's crossing-deformation
+  (parse `[path]`/`[crossing_heightdeformation]`, resolve connected roads from the
+  map, morph the template) — a substantial feature, best ported from openOMSI.
+  Not safely implementable by guessing. Crossings keep the placeholder for now.
+
+### Build: clean.
+
+---
+
 ## Session 2026-10-16 (D6 — intelligent-crossing template spikes)
 
 ### Files changed

@@ -324,6 +324,8 @@ export async function loadModel(src: AssetSource, scoPath: string): Promise<Load
     const loaded = await loadMesh(src, scoDir, meshDef.file);
     if (!loaded) continue;
     // Deformovaná křižovatka (surface): šablonu staticky nevykreslíme (viz funkce).
+    // Správné vykreslení vyžaduje OMSI systém deformace křižovatek (fold šablony
+    // podle [path]/[crossing_heightdeformation]) – dokud není, radši placeholder.
     if (loaded.space === "o3d" && isDeformedCrossingTemplate(loaded.mesh, sco.rendertype)) {
       console.warn(
         `[OM2] Vynechán šablonový mesh křižovatky (rendertype=surface, bbox ~`
