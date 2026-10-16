@@ -2,6 +2,33 @@
 
 See `AUDIT.md` for the full defect list and root-cause evidence.
 
+## Session 2026-10-16 (D9 — roads don't connect / scattered objects)
+
+Verified against openOMSI (`crates/omsi-map/src/tile.rs`) + real data (Grundorf,
+Berlin-Spandau, Lisen).
+
+- **Spline curvature sign was inverted.** openOMSI: `radius > 0` turns RIGHT
+  (clockwise); we used `kappa = -1/R` (left). Measured endpoint→next-start error
+  over resolvable `next_id` links: `+1/R` median **0.00 m** (Grundorf/Lisen),
+  `-1/R` median 7.45 m. Fixed `SPLINE_DIR = 1` → curved roads now join.
+- **`[splineAttachement]` was parsed as a regular `[object]`** (its layout is
+  spline-index + lateral offset, not x/y/z) → lamps/masts/signs scattered to
+  random spots. Removed from `isObjectSection`; not drawn for now (TODO: place
+  along the spline). `[attachObj]` likewise stays undrawn (hangs on a parent).
+- Verified visually: Grundorf and Berlin-Spandau now render a connected road
+  network with correct curves/junctions; no scattered objects.
+
+### Known limitations / next
+- `[spline_h]` height (`delta_h`, cubic) not yet used — 493/646 such splines on
+  Berlin/Lisen; plain gradient parabola may leave small height steps.
+- `[splineAttachement]`/`[attachObj]` objects undrawn (lamps, masts, attached
+  signs). Cross-tile spline connection: a minority still off (Berlin p90 ~72 m)
+  — investigate (tile-grid offset / chain semantics).
+- Record layout is version-dependent; our maps are v11–14 where object offsets
+  hold, but a general version-aware `.map` parser is the robust long-term fix.
+
+---
+
 ## Session 2026-10-16 (D8 — spline height double-counts terrain → floating roads)
 
 - Symptom: roads/splines levitated (worst on hilly maps). Measured: spline `z`

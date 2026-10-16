@@ -21,8 +21,11 @@ const SPL = {
 } as const;
 
 function isObjectSection(name: string) {
-  const n = name.toLowerCase();
-  return n === "object" || n === "splineattachement";
+  // Jen [object]. [splineAttachement]/[splineAttachement_repeater] mají ÚPLNĚ jiný
+  // layout (index splajnu, příčný offset, interval podél silnice) – parsovat je jako
+  // běžný objekt by je rozházelo na náhodná místa. [attachObj] visí na jiném objektu.
+  // Obojí se zatím nevykresluje (TODO: umístit podél splajnu / na rodiče).
+  return name.toLowerCase() === "object";
 }
 function isSplineSection(name: string) {
   const n = name.toLowerCase();

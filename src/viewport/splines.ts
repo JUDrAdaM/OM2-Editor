@@ -37,10 +37,12 @@ export interface LoadedSpline {
 }
 
 /**
- * Znaménko zakřivení: kappa = SPLINE_DIR / radius. Určuje, na kterou stranu se
- * oblouk stáčí. OMSI konvence ověřena vizuálně na Grundorfu.
+ * Znaménko zakřivení: kappa = SPLINE_DIR / radius. OMSI konvence (ověřeno
+ * openOMSI i daty: radius>0 = zatáčí DOPRAVA/po směru hodin): kappa = +1/radius.
+ * Ověřeno na návaznosti splajnů – koncový bod sedí na začátek dalšího (Grundorf
+ * medián 0.00 m, Lisen 0.00 m; s −1 byl medián 7.45 m → silnice nenavazovaly).
  */
-const SPLINE_DIR = -1;
+const SPLINE_DIR = 1;
 
 /**
  * Spočítá snímky podél osy splajnu. Pro rovný úsek stačí málo kroků, pro oblouk
