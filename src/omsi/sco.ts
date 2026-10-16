@@ -41,6 +41,9 @@ export interface ScoInfo {
   meshes: ScoMesh[];
   /** Billboard stromy ([tree]); pokud je neprázdné, objekt se kreslí jako billboard. */
   trees: ScoTree[];
+  /** Absolutní výška: [absheight] NEBO objekt má [path] (křižovatky, výhybky, kusy
+   *  silnic). Takový objekt se umisťuje na svoji z (bez přičtení terénu) – viz OMSI. */
+  absHeight: boolean;
 }
 
 /**
@@ -55,12 +58,15 @@ export function parseSco(text: string): ScoInfo {
   const trees: ScoTree[] = [];
   let currentLod = Infinity;
   let cur: ScoMesh | null = null;
+  let absHeight = false;
 
   const firstVal = (s: { values: string[] }) => s.values.find((v) => v.trim().length > 0)?.trim();
 
   for (const s of sections) {
     const n = s.name.toLowerCase();
-    if (n === "lod") {
+    if (n === "absheight" || n === "path") {
+      absHeight = true;
+    } else if (n === "lod") {
       const v = firstVal(s);
       currentLod = v != null ? (parseFloat(v) || 0) : Infinity;
     } else if (n === "mesh") {
@@ -111,12 +117,12 @@ export function parseSco(text: string): ScoInfo {
     }
   }
 
-  if (all.length === 0) return { meshes: [], trees };
+  if (all.length === 0) return { meshes: [], trees, absHeight };
 
   // Vyber nejvyšší detail: skupina meshů s nejvyšší LOD hodnotou.
   // (Bez [LOD] mají všechny Infinity → vezmou se všechny.)
   let maxLod = -Infinity;
   for (const m of all) if (m.lod > maxLod) maxLod = m.lod;
   const meshes = all.filter((m) => m.lod === maxLod);
-  return { meshes, trees };
+  return { meshes, trees, absHeight };
 }

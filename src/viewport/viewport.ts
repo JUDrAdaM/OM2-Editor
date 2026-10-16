@@ -49,7 +49,7 @@ export class Viewport {
   private tileGroup = new THREE.Group();
   private pickables: Pickable[] = [];
   /** Zpětný index: "tileIndex:objectIndex" → instance (mesh + slot) ve všech dílech modelu. */
-  private objInstances = new Map<string, { mesh: THREE.InstancedMesh; k: number; originRotY: number }[]>();
+  private objInstances = new Map<string, { mesh: THREE.InstancedMesh; k: number; originRotY: number; absolute: boolean }[]>();
   /** Zpětný index: "tileIndex:splineIndex" → mesh splajnu (pro cílený přestavec). */
   private splineObjects = new Map<string, THREE.Object3D>();
   private highlight: THREE.LineSegments;
@@ -244,6 +244,10 @@ export class Viewport {
       for (let oi = 0; oi < t.objects.length; oi++) {
         const o = t.objects[oi];
         const model = this.loadedModels.get(o.path);
+        const absolute = model ? model.absoluteHeight : false;
+        // Objekt mimo svoji dlaždici a NEabsolutní → OMSI ho nekreslí (zbytky z
+        // worldcoordinates map; jinak se rozsypou „mimo mapu").
+        if (this.outOfTile(o) && !absolute) continue;
         const entry = { tileIndex: ti, objectIndex: oi, o, t };
         if (model) { if (!byPath.has(o.path)) byPath.set(o.path, []); byPath.get(o.path)!.push(entry); }
         else boxList.push(entry);
@@ -259,13 +263,13 @@ export class Viewport {
         inst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
         const pmap: { tileIndex: number; objectIndex: number }[] = [];
         entries.forEach((e, k) => {
-          this.setObjMatrix(dummy, e.t, e.o, model.originRotY);
+          this.setObjMatrix(dummy, e.t, e.o, model.originRotY, model.absoluteHeight);
           inst.setMatrixAt(k, dummy.matrix);
           pmap.push({ tileIndex: e.tileIndex, objectIndex: e.objectIndex });
           const key = `${e.tileIndex}:${e.objectIndex}`;
           let arr = this.objInstances.get(key);
           if (!arr) { arr = []; this.objInstances.set(key, arr); }
-          arr.push({ mesh: inst, k, originRotY: model.originRotY });
+          arr.push({ mesh: inst, k, originRotY: model.originRotY, absolute: model.absoluteHeight });
         });
         inst.instanceMatrix.needsUpdate = true;
         inst.frustumCulled = false;
@@ -322,7 +326,7 @@ export class Viewport {
     const o = t.objects[objectIndex];
     const dummy = new THREE.Object3D();
     for (const ent of arr) {
-      this.setObjMatrix(dummy, t, o, ent.originRotY);
+      this.setObjMatrix(dummy, t, o, ent.originRotY, ent.absolute);
       ent.mesh.setMatrixAt(ent.k, dummy.matrix);
       ent.mesh.instanceMatrix.needsUpdate = true;
     }
@@ -358,12 +362,29 @@ export class Viewport {
     else mat?.dispose?.();
   }
 
-  private setObjMatrix(dummy: THREE.Object3D, t: MapTile, o: MapObject, originRotY: number) {
-    const h = tileHeight(t, o.x, o.y);
-    dummy.position.copy(worldPos(t.tileX, t.tileY, o.x, o.y, h + o.z));
+  private setObjMatrix(dummy: THREE.Object3D, t: MapTile, o: MapObject, originRotY: number, absolute: boolean) {
+    // Absolutní výška (křižovatky/výhybky/[absheight]): z přímo, bez terénu.
+    // Jinak objekt stojí na terénu: výška = terén + o.z.
+    const baseY = absolute ? o.z : tileHeight(t, o.x, o.y) + o.z;
+    dummy.position.copy(worldPos(t.tileX, t.tileY, o.x, o.y, baseY));
     dummy.rotation.set(0, THREE.MathUtils.degToRad(o.rotZ + originRotY), 0);
     dummy.scale.set(1, 1, 1);
     dummy.updateMatrix();
+  }
+
+  /** Objekt leží mimo svoji dlaždici (lokální x/y mimo [0,300])? OMSI ho nekreslí. */
+  private outOfTile(o: MapObject): boolean {
+    const e = TILE_SIZE + 1e-3;
+    return o.x < -1e-3 || o.x > e || o.y < -1e-3 || o.y > e;
+  }
+
+  /** Má objekt absolutní výšku (podle načteného modelu)? */
+  private isAbsolute(path: string): boolean {
+    return this.loadedModels.get(path)?.absoluteHeight ?? false;
+  }
+  /** Světová výška (osa Y) základny objektu – absolutní z, nebo terén + z. */
+  private objBaseY(t: MapTile, o: MapObject): number {
+    return this.isAbsolute(o.path) ? o.z : tileHeight(t, o.x, o.y) + o.z;
   }
 
   /** Vyčistí skupinu; disposuje jen vlastní (nesdílené) geometrie/materiály. */
@@ -463,7 +484,7 @@ export class Viewport {
       this.selectObject(objHit.tileIndex, objHit.objectIndex, object);
       const t = this.currentMap.tiles[objHit.tileIndex];
       this.dragging = "object"; this.dragMoved = false; this.controls.enabled = false;
-      this.dragPlane.constant = -(tileHeight(t, object.x, object.y) + object.z + OBJ_H);
+      this.dragPlane.constant = -(this.objBaseY(t, object) + OBJ_H);
       return;
     }
 
@@ -550,7 +571,7 @@ export class Viewport {
   private moveHighlightToObject(sel: ObjectSelection) {
     if (!this.currentMap) return;
     const t = this.currentMap.tiles[sel.tileIndex], o = sel.object;
-    this.highlight.position.copy(worldPos(t.tileX, t.tileY, o.x, o.y, tileHeight(t, o.x, o.y) + o.z + OBJ_H));
+    this.highlight.position.copy(worldPos(t.tileX, t.tileY, o.x, o.y, this.objBaseY(t, o) + OBJ_H));
     this.highlight.visible = true;
   }
   /** Vytvoří/obnoví modrou překryvnou čáru osy vybraného splajnu. */
@@ -615,7 +636,7 @@ export class Viewport {
     if (!this.currentMap) return;
     const t = this.currentMap.tiles[tileIndex], o = t.objects[objectIndex];
     this.selectObject(tileIndex, objectIndex, o);
-    const p = worldPos(t.tileX, t.tileY, o.x, o.y, tileHeight(t, o.x, o.y) + o.z);
+    const p = worldPos(t.tileX, t.tileY, o.x, o.y, this.objBaseY(t, o));
     this.controls.target.copy(p);
     this.camera.position.set(p.x + 40, p.y + 55, p.z + 40);
   }

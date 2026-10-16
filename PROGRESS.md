@@ -2,6 +2,29 @@
 
 See `AUDIT.md` for the full defect list and root-cause evidence.
 
+## Session 2026-10-16 (D10 — levitating & scattered objects on large maps)
+
+Verified against openOMSI (`crates/omsi-scene/src/stage.rs`) + measured data.
+
+- **Absolute-height objects levitated.** openOMSI: an object uses absolute z
+  (no terrain) when its .sco has `[absheight]` OR any `[path]` (crossings,
+  railway switches, road pieces); `absolute_height() = abs_height || !paths`.
+  We added terrain to every object, so those sat ~terrain-height up (~33 m on
+  Berlin). Berlin: 257 such objects (crossings, `EW190` switches).
+- **Scattered objects "outside the map."** OMSI does NOT draw a non-absolute
+  object whose tile-local x/y is outside `[0, tile]` (worldcoordinates-map
+  leftovers that would be 11 km underground). We drew them. Berlin: **7,861**
+  such objects (38% of the sampled objects) — the "random scattered" look.
+- Fix (`sco.ts`, `models.ts`, `viewport.ts`): `ScoInfo.absHeight` +
+  `LoadedModel.absoluteHeight` (`[absheight]`/`[path]`); `setObjMatrix`/highlight/
+  drag/focus use absolute z when set, else terrain+z; `build()` skips
+  non-absolute out-of-tile objects (kept in map data/tree, just not drawn —
+  as OMSI does). Crossings are absolute → now flat plates at the right height.
+- Verified: Berlin-Spandau — no scatter, no levitation; coherent city. Grundorf/
+  Lisen unchanged (few absolute / out-of-tile). Build clean.
+
+---
+
 ## Session 2026-10-16 (D9 — roads don't connect / scattered objects)
 
 Verified against openOMSI (`crates/omsi-map/src/tile.rs`) + real data (Grundorf,

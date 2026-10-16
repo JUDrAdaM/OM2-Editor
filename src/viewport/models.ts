@@ -20,6 +20,8 @@ export interface LoadedModel {
   parts: ModelPart[];
   /** Zachováno kvůli API; origin se zapéká přímo do geometrie → 0. */
   originRotY: number;
+  /** [absheight] nebo [path] → objekt se umisťuje na absolutní z (bez terénu). */
+  absoluteHeight: boolean;
 }
 
 const tgaLoader = new TGALoader();
@@ -285,7 +287,7 @@ export async function loadModel(src: AssetSource, scoPath: string): Promise<Load
       const part = await buildTree(src, scoDir, tree);
       if (part) parts.push(part);
     }
-    if (parts.length) return { parts, originRotY: 0 };
+    if (parts.length) return { parts, originRotY: 0, absoluteHeight: sco.absHeight };
   }
 
   for (const meshDef of sco.meshes) {
@@ -299,7 +301,7 @@ export async function loadModel(src: AssetSource, scoPath: string): Promise<Load
     parts.push({ geometry, material });
   }
 
-  return parts.length ? { parts, originRotY: 0 } : null;
+  return parts.length ? { parts, originRotY: 0, absoluteHeight: sco.absHeight } : null;
 }
 
 /** Cache modelů podle cesty .sco. */
