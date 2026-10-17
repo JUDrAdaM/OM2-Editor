@@ -7,7 +7,7 @@ import {
   duplicateObject, createObject, findTemplateObject, maxId,
 } from "../omsi/map";
 import { terrainHeightAt } from "../omsi/terrain";
-import { ModelCache } from "./models";
+import { ModelCache, decodeTexture } from "./models";
 import type { AssetSource, LoadedModel } from "./models";
 import { SplineCache, buildSplineMesh, splineCenterline, splineSampleAt } from "./splines";
 import type { LoadedSpline } from "./splines";
@@ -76,6 +76,10 @@ export class Viewport {
   private modelCache: ModelCache | null = null;
   private loadedModels = new Map<string, LoadedModel | null>();
   private loadToken = 0;
+  private assetSrc: AssetSource | null = null;
+  /** Základní terénní textura (groundtex[0], typicky tráva); null = plná barva. */
+  private groundTexture: THREE.Texture | null = null;
+  private groundTexToken = 0;
 
   private splineCache: SplineCache | null = null;
   private loadedSplines = new Map<string, LoadedSpline | null>();
@@ -144,8 +148,33 @@ export class Viewport {
   }
 
   setAssetSource(src: AssetSource | null) {
+    this.assetSrc = src;
     this.modelCache = src ? new ModelCache(src) : null;
     this.splineCache = src ? new SplineCache(src) : null;
+  }
+
+  /**
+   * Načte základní terénní texturu (global.cfg `[groundtex]` index 0, typicky
+   * tráva) a po načtení přestaví scénu, aby terén nebyl plná zeleň. Cesta je
+   * relativní ke kořeni OMSI (čte ji AssetSource přímo). Detailní splatmapa
+   * (cesty/dlažba) se zatím nenanáší; silnice kreslí splajny nad terénem.
+   */
+  private async loadGroundTexture() {
+    const token = ++this.groundTexToken;
+    this.groundTexture = null;
+    const map = this.currentMap;
+    const main = map?.groundTex?.[0]?.main;
+    if (!this.assetSrc || !main) return;
+    let buf: ArrayBuffer | null = null;
+    try { buf = await this.assetSrc.readFile(main); } catch { buf = null; }
+    if (!buf || token !== this.groundTexToken) return;
+    const tex = decodeTexture(main, buf);
+    if (!tex || token !== this.groundTexToken) return;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.anisotropy = 4;
+    this.groundTexture = tex;
+    this.build();
   }
 
   private onResize = () => {
@@ -220,6 +249,7 @@ export class Viewport {
     this.frameMap(map);
     this.loadModels();
     this.loadSplines();
+    this.loadGroundTexture();
   }
   rebuild() { this.build(); }
 
@@ -373,7 +403,15 @@ export class Viewport {
         this.groundMeshes.push(tm);
         group.add(tm);
       } else {
-        const plane = new THREE.Mesh(new THREE.PlaneGeometry(TILE_SIZE, TILE_SIZE), tileMat);
+        const planeGeo = new THREE.PlaneGeometry(TILE_SIZE, TILE_SIZE);
+        if (this.groundTexture) {
+          // natáhni UV na opakování textury přes dlaždici
+          const uv = planeGeo.attributes.uv as THREE.BufferAttribute;
+          for (let k = 0; k < uv.count; k++) uv.setXY(k, uv.getX(k) * Viewport.GROUND_REPEAT, uv.getY(k) * Viewport.GROUND_REPEAT);
+          uv.needsUpdate = true;
+        }
+        const plane = new THREE.Mesh(planeGeo, this.groundTexture ? this.groundMaterial() : tileMat);
+        if (this.groundTexture) plane.userData.sharedTex = true;
         plane.rotation.x = -Math.PI / 2; plane.position.copy(center);
         plane.userData.ground = true;
         this.groundMeshes.push(plane);
@@ -652,15 +690,35 @@ export class Viewport {
     return this.isAbsolute(o.path) ? o.z : tileHeight(t, o.x, o.y) + o.z;
   }
 
+  /** Kolikrát se základní terénní textura zopakuje přes dlaždici (~18 m/dlaždici). */
+  private static readonly GROUND_REPEAT = 16;
+
+  /**
+   * Materiál terénu: pokud je načtená základní ground textura (tráva),
+   * použije ji (bílá barva + dlaždicově), jinak plná zeleň jako fallback.
+   * Textura je sdílená (userData.shared na meshi ji chrání před disposem).
+   */
+  private groundMaterial(): THREE.MeshStandardMaterial {
+    if (this.groundTexture) {
+      return new THREE.MeshStandardMaterial({
+        map: this.groundTexture, color: 0xffffff, roughness: 1, side: THREE.DoubleSide,
+      });
+    }
+    return new THREE.MeshStandardMaterial({ color: 0x47553a, roughness: 1, side: THREE.DoubleSide });
+  }
+
   private buildTerrain(t: MapTile): THREE.Mesh {
     const terr = t.terrain!;
     const n = terr.size;
     const step = TILE_SIZE / (n - 1);
+    const rep = Viewport.GROUND_REPEAT;
     const positions = new Float32Array(n * n * 3);
+    const uvs = new Float32Array(n * n * 2);
     for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
       const idx = j * n + i;
       const w = worldPos(t.tileX, t.tileY, i * step, j * step, terr.heights[idx]);
       positions[idx * 3] = w.x; positions[idx * 3 + 1] = w.y; positions[idx * 3 + 2] = w.z;
+      uvs[idx * 2] = (i / (n - 1)) * rep; uvs[idx * 2 + 1] = (j / (n - 1)) * rep;
     }
     const indices: number[] = [];
     for (let j = 0; j < n - 1; j++) for (let i = 0; i < n - 1; i++) {
@@ -669,10 +727,12 @@ export class Viewport {
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
     geo.setIndex(indices);
     geo.computeVertexNormals();
-    const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0x47553a, roughness: 1, side: THREE.DoubleSide }));
+    const m = new THREE.Mesh(geo, this.groundMaterial());
     m.userData.ground = true;
+    if (this.groundTexture) m.userData.sharedTex = true;
     return m;
   }
 

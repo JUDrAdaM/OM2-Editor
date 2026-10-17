@@ -259,15 +259,22 @@ export function parseGlobalCfg(text: string): {
   friendlyName: string;
   tiles: { tileX: number; tileY: number; fileName: string }[];
   sections: OmsiSection[];
+  groundTex: { main: string; detail: string }[];
 } {
   const sections = parseOmsiConfig(text);
   const tiles: { tileX: number; tileY: number; fileName: string }[] = [];
+  const groundTex: { main: string; detail: string }[] = [];
   let name = "";
   let friendlyName = "";
   for (const s of sections) {
     const n = s.name.toLowerCase();
     if (n === "name" && s.values[0]) name = s.values[0].trim();
     if (n === "friendlyname" && s.values[0]) friendlyName = s.values[0].trim();
+    if (n === "groundtex") {
+      // [groundtex]: main textura, detail textura, pak 3 čísla (měřítka) – jen 1./2. řádek.
+      const v = s.values.map((x) => x.trim()).filter((x) => x.length > 0);
+      if (v.length >= 1) groundTex.push({ main: v[0], detail: v[1] ?? "" });
+    }
     if (n === "map") {
       const v = s.values.filter((l) => l.trim().length > 0);
       if (v.length >= 3) {
@@ -279,7 +286,7 @@ export function parseGlobalCfg(text: string): {
       }
     }
   }
-  return { name, friendlyName, tiles, sections };
+  return { name, friendlyName, tiles, sections, groundTex };
 }
 
 /** Sloučí global.cfg + obsah .map souborů do kompletního modelu. */
@@ -311,6 +318,7 @@ export function buildMap(
     rootPath,
     tiles,
     globalSections: g.sections,
+    groundTex: g.groundTex,
   };
 }
 

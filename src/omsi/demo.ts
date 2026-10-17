@@ -60,6 +60,7 @@ export function createDemoMap(): OmsiMap {
     rootPath: "",
     tiles,
     globalSections: [],
+    groundTex: [],
   };
 }
 

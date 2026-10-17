@@ -156,4 +156,11 @@ export interface OmsiMap {
   tiles: MapTile[];
   /** Syrové sekce z global.cfg, které zatím jen uchováváme. */
   globalSections: OmsiSection[];
+  /**
+   * Paleta terénních textur z global.cfg `[groundtex]` (pořadí = index). Index 0
+   * je základní textura terénu (typicky tráva); další jsou detaily nanášené přes
+   * splatmapu (cesty, dlažba…). Cesty jsou relativní ke KOŘENI OMSI (např.
+   * `texture\gras.bmp`). Zatím používáme jen základní (index 0) dlaždicově.
+   */
+  groundTex: { main: string; detail: string }[];
 }

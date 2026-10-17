@@ -2,6 +2,31 @@
 
 See `AUDIT.md` for the full defect list and root-cause evidence.
 
+## Session 2026-10-17 (terrain base texture — grass instead of solid green)
+
+The biggest remaining "doesn't look like OMSI" gap was the terrain: a flat solid
+green slab. (A scene scan first ruled out textures on objects — 94% of mesh
+parts are textured; the 6% untextured are tiny sign/plate decals, not buildings.)
+
+- OMSI's ground textures are a palette in **global.cfg `[groundtex]`** (index 0 =
+  base, usually `texture\gras.bmp`; the rest are splatmap detail layers). The
+  paths are **OMSI-root-relative**, so the existing `AssetSource` reads them
+  directly (`gras.bmp` lives at `<OMSI>/Texture/gras.bmp`, shared, not in the map).
+- Now parse `[groundtex]` (`map.ts` → `OmsiMap.groundTex`) and load the base
+  texture (`viewport.loadGroundTexture`, async, rebuilds on load). `buildTerrain`
+  gets tiled UVs (`GROUND_REPEAT = 16` ≈ every 19 m) and a textured material;
+  the flat-plane fallback (tiles without terrain) too. Solid green stays as the
+  fallback until the texture loads. The texture is shared (survives rebuilds).
+- Splatmap detail (cobble/dirt paths on the terrain) is **not** applied yet;
+  roads are drawn as splines above the ground, so the base grass is enough for a
+  natural look.
+- **Verified:** Grundorf & Berlin-Spandau — terrain now reads as grass (close-up
+  texture detail, natural tone) instead of a dark slab; city/roads/trees sit on
+  it correctly. 144 FPS (Grundorf) / 53 FPS (Berlin 25 tiles), no JS errors.
+  Build clean. Data-driven, so a non-grass base map uses its own base texture.
+
+---
+
 ## Session 2026-10-17 (distance culling — large maps at grazing angles)
 
 Added per-tile **distance culling** on top of D4's frustum culling. A low
