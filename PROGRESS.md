@@ -2,6 +2,26 @@
 
 See `AUDIT.md` for the full defect list and root-cause evidence.
 
+## Session 2026-10-17 (terrain lightmaps — baked shading)
+
+Added OMSI's **baked terrain lightmaps** (`<map>/tile_X_Y.map.LM.bmp`, a 256×256
+BMP of baked shadows/AO per tile) so the terrain isn't a flat uniform grass but
+has soft shading — what the OMSI editor shows. (A scan of the .map confirmed the
+`[terrain]`/`[water]` sections and the `.terrain` binary hold no splatmap/water
+data for these maps, so the base grass + lightmap is the complete terrain.)
+
+- `viewport.loadLightmaps` loads each terrain tile's `.map.LM.bmp` via the
+  `AssetSource` (path `maps/<rootName>/<fileName>.LM.bmp`), through the bounded
+  pool (progressive, like model/spline loading), then rebuilds. `buildTerrain`
+  adds a second UV set (`uv1`, 0..1 across the tile) and sets `material.lightMap`
+  (intensity 1.0, `NoColorSpace`). Missing lightmap → graceful grass-only fallback.
+- **Verified in the live scene:** Grundorf 19/19 terrain meshes carry both the
+  grass `map` and the `lightMap` on `uv1`; Berlin 57/60 (3 tiles have no LM file →
+  fallback). Visible soft shading on Berlin's elevation/urban terrain; no JS
+  errors; build clean. Cost is bounded (~0.25 MB GPU per tile, loaded lazily).
+
+---
+
 ## Session 2026-10-17 (terrain base texture — grass instead of solid green)
 
 The biggest remaining "doesn't look like OMSI" gap was the terrain: a flat solid

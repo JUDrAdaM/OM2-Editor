@@ -80,6 +80,9 @@ export class Viewport {
   /** Základní terénní textura (groundtex[0], typicky tráva); null = plná barva. */
   private groundTexture: THREE.Texture | null = null;
   private groundTexToken = 0;
+  /** Zapečené lightmapy terénu (`.map.LM.bmp`) podle fileName dlaždice. */
+  private lightmaps = new Map<string, THREE.Texture>();
+  private lmToken = 0;
 
   private splineCache: SplineCache | null = null;
   private loadedSplines = new Map<string, LoadedSpline | null>();
@@ -177,6 +180,39 @@ export class Viewport {
     this.build();
   }
 
+  /**
+   * Načte zapečené lightmapy terénu (`<mapa>/tile_X_Y.map.LM.bmp`) – stíny/AO,
+   * které OMSI předpočítá a editor zobrazuje. Nanáší se na terén přes 2. UV sadu
+   * (uv1, 0..1 přes dlaždici) jako `lightMap`, takže terén není plochý jas, ale
+   * má měkké stínování. Načítá se přes bounded pool (progresivně) a jen pro
+   * dlaždice s terénem; chybějící lightmapa = fallback bez stínování.
+   */
+  private async loadLightmaps() {
+    const token = ++this.lmToken;
+    this.lightmaps.clear();
+    const map = this.currentMap;
+    if (!this.assetSrc || !map || !map.rootName) return;
+    const tiles = map.tiles.filter((t) => t.terrain);
+    await runPool(
+      tiles, ASSET_CONCURRENCY,
+      async (t) => {
+        const path = `maps/${map.rootName}/${t.fileName}.LM.bmp`;
+        let buf: ArrayBuffer | null = null;
+        try { buf = await this.assetSrc!.readFile(path); } catch { buf = null; }
+        if (!buf || token !== this.lmToken) return;
+        const tex = decodeTexture(path, buf);
+        if (tex && token === this.lmToken) {
+          tex.colorSpace = THREE.NoColorSpace; // lightmapa je multiplikátor, ne sRGB barva
+          tex.flipY = true;
+          this.lightmaps.set(t.fileName, tex);
+        }
+      },
+      undefined,
+      () => token !== this.lmToken
+    );
+    if (token === this.lmToken && this.lightmaps.size) this.build();
+  }
+
   private onResize = () => {
     const { clientWidth: w, clientHeight: h } = this.container;
     this.camera.aspect = w / h;
@@ -250,6 +286,7 @@ export class Viewport {
     this.loadModels();
     this.loadSplines();
     this.loadGroundTexture();
+    this.loadLightmaps();
   }
   rebuild() { this.build(); }
 
@@ -698,13 +735,12 @@ export class Viewport {
    * použije ji (bílá barva + dlaždicově), jinak plná zeleň jako fallback.
    * Textura je sdílená (userData.shared na meshi ji chrání před disposem).
    */
-  private groundMaterial(): THREE.MeshStandardMaterial {
-    if (this.groundTexture) {
-      return new THREE.MeshStandardMaterial({
-        map: this.groundTexture, color: 0xffffff, roughness: 1, side: THREE.DoubleSide,
-      });
-    }
-    return new THREE.MeshStandardMaterial({ color: 0x47553a, roughness: 1, side: THREE.DoubleSide });
+  private groundMaterial(lightmap?: THREE.Texture): THREE.MeshStandardMaterial {
+    const mat = this.groundTexture
+      ? new THREE.MeshStandardMaterial({ map: this.groundTexture, color: 0xffffff, roughness: 1, side: THREE.DoubleSide })
+      : new THREE.MeshStandardMaterial({ color: 0x47553a, roughness: 1, side: THREE.DoubleSide });
+    if (lightmap) { mat.lightMap = lightmap; mat.lightMapIntensity = 1.0; }
+    return mat;
   }
 
   private buildTerrain(t: MapTile): THREE.Mesh {
@@ -714,11 +750,13 @@ export class Viewport {
     const rep = Viewport.GROUND_REPEAT;
     const positions = new Float32Array(n * n * 3);
     const uvs = new Float32Array(n * n * 2);
+    const uv1 = new Float32Array(n * n * 2); // 0..1 přes dlaždici – pro lightmapu
     for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
       const idx = j * n + i;
       const w = worldPos(t.tileX, t.tileY, i * step, j * step, terr.heights[idx]);
       positions[idx * 3] = w.x; positions[idx * 3 + 1] = w.y; positions[idx * 3 + 2] = w.z;
       uvs[idx * 2] = (i / (n - 1)) * rep; uvs[idx * 2 + 1] = (j / (n - 1)) * rep;
+      uv1[idx * 2] = i / (n - 1); uv1[idx * 2 + 1] = j / (n - 1);
     }
     const indices: number[] = [];
     for (let j = 0; j < n - 1; j++) for (let i = 0; i < n - 1; i++) {
@@ -728,11 +766,13 @@ export class Viewport {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
     geo.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
+    geo.setAttribute("uv1", new THREE.BufferAttribute(uv1, 2));
     geo.setIndex(indices);
     geo.computeVertexNormals();
-    const m = new THREE.Mesh(geo, this.groundMaterial());
+    const lm = this.lightmaps.get(t.fileName);
+    const m = new THREE.Mesh(geo, this.groundMaterial(lm));
     m.userData.ground = true;
-    if (this.groundTexture) m.userData.sharedTex = true;
+    if (this.groundTexture || lm) m.userData.sharedTex = true;
     return m;
   }
 
