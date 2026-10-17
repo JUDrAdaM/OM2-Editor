@@ -22,6 +22,28 @@ export interface LoadedModel {
   originRotY: number;
   /** [absheight] nebo [path] → objekt se umisťuje na absolutní z (bez terénu). */
   absoluteHeight: boolean;
+  /** Matice bodů [new_attachment] (pro děti [attachObj]) v three-prostoru rodiče. */
+  attachments: THREE.Matrix4[];
+}
+
+/**
+ * Matice jednoho [new_attachment] bodu ve three-prostoru. OMSI skládá operace
+ * v D3D (levotočivý, Y-up): m = step · m, rotace se zápornými úhly. Převedeme na
+ * three (pravotočivý) konjugací maticí S=diag(1,1,-1) (převrácení Z jako u meshů).
+ */
+function attachmentMatrix(ops: { op: string; vals: number[] }[]): THREE.Matrix4 {
+  const m = new THREE.Matrix4();
+  const step = new THREE.Matrix4();
+  for (const { op, vals } of ops) {
+    if (op === "attach_trans" && vals.length >= 3) step.makeTranslation(vals[0], vals[1], vals[2]);
+    else if (op === "attach_rot_x") step.makeRotationX(-THREE.MathUtils.degToRad(vals[0] || 0));
+    else if (op === "attach_rot_y") step.makeRotationY(-THREE.MathUtils.degToRad(vals[0] || 0));
+    else if (op === "attach_rot_z") step.makeRotationZ(-THREE.MathUtils.degToRad(vals[0] || 0));
+    else continue;
+    m.premultiply(step);
+  }
+  const S = new THREE.Matrix4().makeScale(1, 1, -1);
+  return S.clone().multiply(m).multiply(S);
 }
 
 const tgaLoader = new TGALoader();
@@ -287,7 +309,7 @@ export async function loadModel(src: AssetSource, scoPath: string): Promise<Load
       const part = await buildTree(src, scoDir, tree);
       if (part) parts.push(part);
     }
-    if (parts.length) return { parts, originRotY: 0, absoluteHeight: sco.absHeight };
+    if (parts.length) return { parts, originRotY: 0, absoluteHeight: sco.absHeight, attachments: sco.attachments.map(attachmentMatrix) };
   }
 
   for (const meshDef of sco.meshes) {
@@ -301,7 +323,7 @@ export async function loadModel(src: AssetSource, scoPath: string): Promise<Load
     parts.push({ geometry, material });
   }
 
-  return parts.length ? { parts, originRotY: 0, absoluteHeight: sco.absHeight } : null;
+  return parts.length ? { parts, originRotY: 0, absoluteHeight: sco.absHeight, attachments: sco.attachments.map(attachmentMatrix) } : null;
 }
 
 /** Cache modelů podle cesty .sco. */

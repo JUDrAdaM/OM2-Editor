@@ -6,6 +6,7 @@ import type {
   MapObject,
   MapSpline,
   SplineAttachment,
+  AttachObject,
   OmsiSection,
 } from "./types";
 
@@ -135,11 +136,35 @@ function deriveSplineAttachment(
   };
 }
 
+/**
+ * [attachObj]: dítě zavěšené na rodiči. Layout (po cestě .sco, v>=10):
+ *   id, parentId, instance("0"), attachIndex, heading, [v>=12: pitch, bank], labely.
+ */
+function deriveAttachObject(
+  section: OmsiSection,
+  sectionIndex: number,
+  version: number
+): AttachObject | null {
+  const pathIndex = findPathLine(section.values, ".sco");
+  if (pathIndex < 0) return null;
+  const v = section.values;
+  // Starší verze (v<10) adresují rodiče indexem záznamu – zatím nepodporováno.
+  if (version < 10 && version !== 0) return null;
+  return {
+    path: v[pathIndex].trim(),
+    parentId: toInt(v[pathIndex + 2]),
+    attachIndex: Math.max(0, Math.round(num(v[pathIndex + 4]))),
+    heading: num(v[pathIndex + 5]),
+    sectionIndex,
+  };
+}
+
 /** Odvodí objekty/splajny/textury ze sekcí dlaždice (sekce = zdroj pravdy). */
 export function deriveTile(tile: MapTile): void {
   const objects: MapObject[] = [];
   const splines: MapSpline[] = [];
   const splineAttachments: SplineAttachment[] = [];
+  const attachObjects: AttachObject[] = [];
   const groundTextures: string[] = [];
   const version = tileVersion(tile.sections);
   tile.sections.forEach((s, i) => {
@@ -154,6 +179,9 @@ export function deriveTile(tile: MapTile): void {
       // jen běžné (ne repeater přes hranice dlaždic)
       const a = deriveSplineAttachment(s, i, version);
       if (a) splineAttachments.push(a);
+    } else if (n === "attachobj") {
+      const a = deriveAttachObject(s, i, version);
+      if (a) attachObjects.push(a);
     } else if (n === "groundtex") {
       for (const val of s.values) if (val.trim()) groundTextures.push(val.trim());
     }
@@ -161,6 +189,7 @@ export function deriveTile(tile: MapTile): void {
   tile.objects = objects;
   tile.splines = splines;
   tile.splineAttachments = splineAttachments;
+  tile.attachObjects = attachObjects;
   tile.groundTextures = groundTextures;
 }
 
@@ -180,6 +209,7 @@ export function parseTile(
     objects: [],
     splines: [],
     splineAttachments: [],
+    attachObjects: [],
     groundTextures: [],
     dirty: false,
   };

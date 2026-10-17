@@ -92,6 +92,19 @@ export interface SplineAttachment {
   sectionIndex: number;
 }
 
+/** [attachObj]: objekt zavěšený na bodu [new_attachment] rodičovského objektu. */
+export interface AttachObject {
+  /** Cesta k .sco. */
+  path: string;
+  /** ID rodičovského objektu v mapě. */
+  parentId: number | null;
+  /** Index bodu [new_attachment] rodiče (0-based). */
+  attachIndex: number;
+  /** Vlastní natočení (heading, stupně). */
+  heading: number;
+  sectionIndex: number;
+}
+
 /** Jedna dlaždice mapy. */
 export interface MapTile {
   /** Souřadnice dlaždice v mřížce (z global.cfg). */
@@ -107,6 +120,8 @@ export interface MapTile {
   splines: MapSpline[];
   /** Odvozený pohled – řady objektů podél splajnů ([splineAttachement]). */
   splineAttachments: SplineAttachment[];
+  /** Odvozený pohled – objekty zavěšené na rodičích ([attachObj]). */
+  attachObjects: AttachObject[];
   /** Odkazy na textury terénu (groundtex), pořadí = index. */
   groundTextures: string[];
   /** Výškmapa terénu (pokud existuje *.terrain soubor). */

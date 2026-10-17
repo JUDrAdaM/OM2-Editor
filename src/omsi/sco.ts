@@ -44,6 +44,9 @@ export interface ScoInfo {
   /** Absolutní výška: [absheight] NEBO objekt má [path] (křižovatky, výhybky, kusy
    *  silnic). Takový objekt se umisťuje na svoji z (bez přičtení terénu) – viz OMSI. */
   absHeight: boolean;
+  /** Body [new_attachment] (pro [attachObj]): každý je seznam operací attach_trans /
+   *  attach_rot_x/y/z v pořadí, jak stojí v souboru. */
+  attachments: { op: string; vals: number[] }[][];
 }
 
 /**
@@ -59,11 +62,20 @@ export function parseSco(text: string): ScoInfo {
   let currentLod = Infinity;
   let cur: ScoMesh | null = null;
   let absHeight = false;
+  const attachments: { op: string; vals: number[] }[][] = [];
+  let curAttach: { op: string; vals: number[] }[] | null = null;
+  const ATTACH_ARGS: Record<string, number> = {
+    attach_trans: 3, attach_rot_x: 1, attach_rot_y: 1, attach_rot_z: 1,
+  };
 
   const firstVal = (s: { values: string[] }) => s.values.find((v) => v.trim().length > 0)?.trim();
 
   for (const s of sections) {
     const n = s.name.toLowerCase();
+    if (n === "new_attachment") {
+      curAttach = [];
+      attachments.push(curAttach);
+    }
     if (n === "absheight" || n === "path") {
       absHeight = true;
     } else if (n === "lod") {
@@ -115,14 +127,28 @@ export function parseSco(text: string): ScoInfo {
         if (parts.length >= 3) cur.originTrans = [parts[0] || 0, parts[1] || 0, parts[2] || 0];
       }
     }
+
+    // attach_trans / attach_rot_* řádky patří poslednímu [new_attachment] (i napříč
+    // sekcemi – OMSI je čte jako celé řádky kdekoliv za ním).
+    if (curAttach) {
+      for (let i = 0; i < s.values.length; i++) {
+        const tok = s.values[i].trim().toLowerCase();
+        const argc = ATTACH_ARGS[tok];
+        if (!argc) continue;
+        const vals: number[] = [];
+        for (let a = 1; a <= argc; a++) vals.push(parseFloat((s.values[i + a] || "0").replace(",", ".")) || 0);
+        curAttach.push({ op: tok, vals });
+        i += argc;
+      }
+    }
   }
 
-  if (all.length === 0) return { meshes: [], trees, absHeight };
+  if (all.length === 0) return { meshes: [], trees, absHeight, attachments };
 
   // Vyber nejvyšší detail: skupina meshů s nejvyšší LOD hodnotou.
   // (Bez [LOD] mají všechny Infinity → vezmou se všechny.)
   let maxLod = -Infinity;
   for (const m of all) if (m.lod > maxLod) maxLod = m.lod;
   const meshes = all.filter((m) => m.lod === maxLod);
-  return { meshes, trees, absHeight };
+  return { meshes, trees, absHeight, attachments };
 }

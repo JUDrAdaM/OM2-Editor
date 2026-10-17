@@ -2,6 +2,31 @@
 
 See `AUDIT.md` for the full defect list and root-cause evidence.
 
+## Session 2026-10-17 (D11 — render spline attachments & attachObj)
+
+Verified against openOMSI (`omsi-world/map_index.rs`, `omsi-scene/stage.rs`,
+`omsi-scenery/sco.rs`).
+
+- **[splineAttachement]** (lamps, masts, signs along roads): placed at
+  `startDist + j*interval` along the spline's chain (while `j*interval ≤ range`),
+  each offset laterally (right) + height, facing spline tangent + attachment
+  heading; walks following splines via next_id. `splineSampleAt` added.
+  Verified: Berlin-Spandau renders 1082 instances on the splines.
+- **[attachObj]** (signs/lights on a parent's `[new_attachment]` point): parse
+  `[new_attachment]` + `attach_trans`/`attach_rot_*` ops → attachment matrix
+  (D3D built like openOMSI, converted to three by S·M·S, S=diag(1,1,-1)); child
+  world = parent(T·R_Y) · attachMatrix · R_Y(childHeading). Verified: resolves
+  and renders without scatter.
+
+### Known limitations / next
+- attachObj parents must be a regular `[object]` in a loaded tile — children
+  whose parent is cross-tile (unloaded) or a `[splineAttachement]`/`[attachObj]`
+  are not drawn yet (≈half in a 12-tile slice; improves with more tiles loaded).
+- `[splineAttachement_repeater]` (cross-tile rows) and attachment-row picking
+  not done. attachObj pitch/bank not applied.
+
+---
+
 ## Session 2026-10-16 (D10 — levitating & scattered objects on large maps)
 
 Verified against openOMSI (`crates/omsi-scene/src/stage.rs`) + measured data.

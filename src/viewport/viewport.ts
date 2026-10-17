@@ -186,6 +186,7 @@ export class Viewport {
     for (const t of this.currentMap.tiles) {
       for (const o of t.objects) if (o.path) paths.add(o.path);
       for (const a of t.splineAttachments) if (a.path) paths.add(a.path);
+      for (const a of t.attachObjects) if (a.path) paths.add(a.path);
     }
     const list = [...paths];
     this.onStatus?.(`Načítám ${list.length} modelů…`);
@@ -312,6 +313,28 @@ export class Viewport {
         this.collectAttachmentMatrices(t, a, dummyA, mats);
       }
     }
+    // [attachObj]: děti zavěšené na bodech [new_attachment] rodičů
+    const parentById = new Map<number, { t: MapTile; o: MapObject }>();
+    for (const t of map.tiles) for (const o of t.objects) if (o.id != null) parentById.set(o.id, { t, o });
+    for (const t of map.tiles) {
+      for (const a of t.attachObjects) {
+        if (!a.path || a.parentId == null) continue;
+        const parent = parentById.get(a.parentId);
+        if (!parent) continue;
+        const pModel = this.loadedModels.get(parent.o.path);
+        const attachMat = pModel?.attachments[a.attachIndex] ?? new THREE.Matrix4();
+        // svět rodiče = T(pozice) · R_Y(heading)
+        const pm = new THREE.Matrix4().makeRotationY(THREE.MathUtils.degToRad(parent.o.rotZ));
+        pm.setPosition(worldPos(parent.t.tileX, parent.t.tileY, parent.o.x, parent.o.y, this.objBaseY(parent.t, parent.o)));
+        const child = pm.clone().multiply(attachMat).multiply(
+          new THREE.Matrix4().makeRotationY(THREE.MathUtils.degToRad(a.heading))
+        );
+        let mats = attByPath.get(a.path);
+        if (!mats) { mats = []; attByPath.set(a.path, mats); }
+        mats.push(child);
+      }
+    }
+
     for (const [p, mats] of attByPath) {
       const model = this.loadedModels.get(p);
       if (!model || mats.length === 0) continue;
