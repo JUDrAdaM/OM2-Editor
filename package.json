@@ -45,7 +45,8 @@
       {
         "provider": "github",
         "owner": "JUDrAdaM",
-        "repo": "OM2-Editor"
+        "repo": "OM2-Editor",
+        "releaseType": "prerelease"
       }
     ],
     "win": {
