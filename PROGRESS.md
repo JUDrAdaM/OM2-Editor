@@ -2,6 +2,23 @@
 
 See `AUDIT.md` for the full defect list and root-cause evidence.
 
+## Session 2026-10-17 (distance culling — large maps at grazing angles)
+
+Added per-tile **distance culling** on top of D4's frustum culling. A low
+grazing view across a large map keeps hundreds of tiles inside the frustum
+(stretching to the far plane), tanking the framerate. Now a tile renders only
+when it is in the frustum **and** within a horizontal radius of the camera
+target. The radius scales with zoom (`clamp(zoomDist*2 + 900, 1600, 14000)`), so
+the focused region is always shown in full and only the distant periphery drops.
+
+- `updateVisibility` (`viewport.ts`): horizontal distance test vs
+  `controls.target`, combined with the existing `frustum.intersectsSphere`.
+- **Verified:** Grundorf (19 tiles) **19/19** visible, 144 FPS — small maps never
+  over-culled. Berlin 120 tiles: 103/120 zoomed out → **83/120** zoomed in, FPS
+  30 → 50, focused area complete (no holes/flicker). No JS errors. Build clean.
+
+---
+
 ## Session 2026-10-17 (attachment axis — "buildings stacked on top of each other")
 
 User report: buildings appearing "sideways" and "several buildings on top of

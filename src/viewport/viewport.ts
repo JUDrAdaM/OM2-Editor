@@ -162,17 +162,32 @@ export class Viewport {
     this.updateHud();
   };
 
-  /** Per-dlaždicový frustum culling: neviditelné dlaždice se nesubmitují. */
+  /**
+   * Per-dlaždicový culling: dlaždice se submituje jen když je v zorném poli
+   * (frustum) A zároveň v dosahu od cíle kamery (distance culling). Dosah roste
+   * se zoomem (vzdálenost kamera↔cíl), takže zaostřená oblast je vždy celá vidět;
+   * ořízne se jen vzdálená periferie – hlavní přínos u nízkých „grazing" pohledů
+   * přes velké mapy, kde by frustum jinak pustil stovky dlaždic až k obzoru.
+   */
   private updateVisibility() {
     if (this.tileGroups.length === 0) return;
     this.camera.updateMatrixWorld();
     this.camera.matrixWorldInverse.copy(this.camera.matrixWorld).invert();
     this.projScreenMatrix.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.projScreenMatrix);
+
+    // Dosah culling: horizontální poloměr kolem cíle kamery, škálovaný zoomem.
+    const tgt = this.controls.target;
+    const zoomDist = this.camera.position.distanceTo(tgt);
+    const radius = Math.min(14000, Math.max(1600, zoomDist * 2 + 900));
+    const r2 = radius * radius;
+
     let visible = 0;
     for (const tg of this.tileGroups) {
       if (!tg) continue;
-      const v = this.frustum.intersectsSphere(tg.sphere);
+      const dx = tg.sphere.center.x - tgt.x, dz = tg.sphere.center.z - tgt.z;
+      const near = dx * dx + dz * dz <= r2;
+      const v = near && this.frustum.intersectsSphere(tg.sphere);
       tg.group.visible = v;
       if (v) visible++;
     }
