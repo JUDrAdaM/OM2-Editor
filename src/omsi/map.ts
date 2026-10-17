@@ -25,8 +25,8 @@ const SPL = {
 function isObjectSection(name: string) {
   // Jen [object]. [splineAttachement]/[splineAttachement_repeater] mají ÚPLNĚ jiný
   // layout (index splajnu, příčný offset, interval podél silnice) – parsovat je jako
-  // běžný objekt by je rozházelo na náhodná místa. [attachObj] visí na jiném objektu.
-  // Obojí se zatím nevykresluje (TODO: umístit podél splajnu / na rodiče).
+  // běžný objekt by je rozházelo na náhodná místa. Řeší je deriveSplineAttachment,
+  // [attachObj] deriveAttachObject.
   return name.toLowerCase() === "object";
 }
 function isSplineSection(name: string) {
@@ -71,12 +71,39 @@ function deriveObject(section: OmsiSection, sectionIndex: number): MapObject | n
   };
 }
 
-function deriveSpline(section: OmsiSection, sectionIndex: number): MapSpline | null {
+/**
+ * Kumulativní offset splajnu v řetězci (OMSI `tex_offset`, verze ≥11). Záznam
+ * [spline] po gradientech (a u [spline_h] po delta_h) obsahuje cant_start/end
+ * (verze ≥5) a pak koncová čísla skew_start/skew_end/tex_offset. tex_offset je
+ * 3. koncové číslo (při 1–2 je to 1.; při 0 je 0). map_chain_offset = tex_offset,
+ * pokud je konečný a kladný, jinak 0 (přesně jako openOMSI read_spline).
+ */
+function splineChainOffset(v: string[], trailingStart: number): number {
+  const nums: number[] = [];
+  for (let i = trailingStart; i < v.length; i++) {
+    const t = (v[i] ?? "").trim();
+    if (t === "") continue;
+    if (/^mirror/i.test(t)) break;
+    if (/^object\s+nr/i.test(t)) continue;
+    const n = parseFloat(t.replace(",", "."));
+    if (Number.isFinite(n)) nums.push(n);
+  }
+  let texOffset = 0;
+  if (nums.length >= 3) texOffset = nums[2];
+  else if (nums.length >= 1) texOffset = nums[0];
+  return Number.isFinite(texOffset) && texOffset > 0 ? texOffset : 0;
+}
+
+function deriveSpline(section: OmsiSection, sectionIndex: number, version: number): MapSpline | null {
   const pathIndex = findPathLine(section.values, ".sli");
   if (pathIndex < 0) return null;
   const v = section.values;
   // [spline_h] má po gradientech navíc jedno pole: celkové převýšení (delta_h).
   const isH = section.name.toLowerCase() === "spline_h";
+  // Po gradS/gradE následuje (u _h) delta_h, pak cant_start/cant_end (verze ≥5),
+  // pak koncová čísla (skew/tex_offset). Spočítáme index 1. koncového čísla.
+  const hasCant = version >= 5 || version === 0;
+  const trailingStart = pathIndex + SPL.gradE + 1 + (isH ? 1 : 0) + (hasCant ? 2 : 0);
   return {
     id: toInt(v[pathIndex + SPL.id]),
     prevId: toInt(v[pathIndex + SPL.prevId]),
@@ -91,6 +118,7 @@ function deriveSpline(section: OmsiSection, sectionIndex: number): MapSpline | n
     gradientStart: num(v[pathIndex + SPL.gradS]),
     gradientEnd: num(v[pathIndex + SPL.gradE]),
     deltaH: isH ? num(v[pathIndex + SPL.gradE + 1]) : null,
+    chainOffset: splineChainOffset(v, trailingStart),
     sectionIndex,
     pathIndex,
   };
@@ -111,7 +139,9 @@ function tileVersion(sections: OmsiSection[]): number {
  * [splineAttachement]: řada objektů podél splajnu. Layout (po řádku s cestou .sco):
  *   id, splineIndex, lateral, height, startDist, heading, [v>=12: pitch, bank],
  *   interval, range, [v>=12: tilt], [v>=4: počet stringů + stringy]
- * [splineAttachement_repeater] (přes hranice dlaždic) zatím vynecháváme.
+ * [splineAttachement_repeater] (pokračování řady v sousední dlaždici) má navíc
+ * 2 řádky PŘED cestou (master tile idx, pořadí 1. objektu) – ty findPathLine
+ * přeskočí; pole za cestou jsou identická, takže se parsuje stejně.
  */
 function deriveSplineAttachment(
   section: OmsiSection,
@@ -173,10 +203,13 @@ export function deriveTile(tile: MapTile): void {
       const o = deriveObject(s, i);
       if (o) objects.push(o);
     } else if (isSplineSection(s.name)) {
-      const sp = deriveSpline(s, i);
+      const sp = deriveSpline(s, i, version);
       if (sp) splines.push(sp);
-    } else if (n === "splineattachement") {
-      // jen běžné (ne repeater přes hranice dlaždic)
+    } else if (n === "splineattachement" || n === "splineattachement_repeater") {
+      // Běžné i repeater (přes hranice dlaždic). Rozložení polí za cestou je
+      // u obou identické; repeater má navíc 2 řádky PŘED cestou (index master
+      // dlaždice + pořadí 1. objektu) – findPathLine je přeskočí a pro umístění
+      // se nepoužívají (OMSI je bere jen pro konzistenční kontrolu).
       const a = deriveSplineAttachment(s, i, version);
       if (a) splineAttachments.push(a);
     } else if (n === "attachobj") {

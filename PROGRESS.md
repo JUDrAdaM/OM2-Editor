@@ -2,6 +2,43 @@
 
 See `AUDIT.md` for the full defect list and root-cause evidence.
 
+## Session 2026-10-17 (spline attachment repeaters — cross-tile rows) — v0.0.13-alpha
+
+The last big real gap. `[splineAttachement_repeater]` records (cross-tile
+continuations of a row: catenary masts, guardrails, fences along roads/rails)
+were parsed-dropped — 213 in Berlin-Spandau. Now rendered. Faithful port of
+openOMSI `omsi-world/map_index.rs::tile_row_objects` + `omsi-map/tile.rs`.
+
+- **Key semantics (verified against openOMSI):** a repeater is *self-contained*
+  and placed exactly like a normal `[splineAttachement]`. The chain is walked
+  **only within the same tile** (via `next_id`), ending at the tile edge; the
+  next tile's repeater continues the row. So **no global spline index is needed**.
+  The repeater's two extra pre-path fields (master tile idx, first-object idx)
+  are consistency metadata only — placement ignores them.
+- **`map_chain_offset` is the missing piece.** Object `j` sits at chain distance
+  `startDist + j*interval` measured from the *chain's* start; a tile's start
+  spline begins at its cumulative `chainOffset`, so local distance is
+  `d0 + j*interval`, `d0 = startDist − chainOffset`. Objects with local < 0 are
+  on earlier tiles (their repeaters draw them); beyond this tile's splines →
+  next tile. `chainOffset` is OMSI's `tex_offset` = the 3rd trailing number of a
+  `[spline]`/`[spline_h]` record (after cant); sanitized to 0 when non-positive.
+- Files: `types.ts` (`MapSpline.chainOffset`), `map.ts` (`splineChainOffset` +
+  `deriveSpline(version)`; `deriveTile` now accepts `splineattachement_repeater`),
+  `viewport.ts` (`collectAttachmentMatrices`: `d0 = startDist − chainOffset`,
+  skip local<0). Applies to normals too (correct per openOMSI).
+- **Verified on real Berlin-Spandau** (node replica over the actual UTF-16 maps):
+  `chainOffset` parse is **byte-perfect** — 346/346 within-tile prev links match
+  `chainOffset(prev)+prev.length` to 0.00 m. Repeater rows partition the chain
+  across tiles with no duplicates (Oberleitung_Gittermast row: chainOffset
+  300/600/900 on consecutive tiles, each draws its slice). In the exact loaded
+  60-tile centroid view: **+1181 repeater instances** (24 tiles, 98 records)
+  that were previously invisible; normals repositioned correctly (3106→3257, no
+  collapse). Total roadside attachment instances 3106 → 4438.
+- **Browser (Berlin-Spandau, 60 tiles):** loads 568/573 models, coherent city,
+  **no JS errors** (only benign texture 404s), 30 FPS, no regression. Build clean.
+
+---
+
 ## Session 2026-10-17 (crossing [crossing_heightdeformation] + rotX/rotY)
 
 - **Object pitch/bank (rotX/rotY)** now applied at render (`setObjMatrix`):

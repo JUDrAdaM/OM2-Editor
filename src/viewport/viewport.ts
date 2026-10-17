@@ -526,17 +526,29 @@ export class Viewport {
     t: MapTile, a: SplineAttachment,
     dummy: THREE.Object3D, out: THREE.Matrix4[]
   ) {
+    // Vzdálenost objektu je měřená od začátku CELÉHO řetězce (přes dlaždice).
+    // Počáteční splajn na této dlaždici začíná v řetězci na své chainOffset, takže
+    // v lokálních souřadnicích řetězce (od začátku tohoto splajnu) je objekt j na
+    // d0 + j·interval. Objekty se zápornou vzdáleností leží na předchozí dlaždici
+    // (kreslí je její repeater), objekty za koncem splajnů této dlaždice na další
+    // (přesně jako OMSI – chain se nechodí přes hranice dlaždic). Viz openOMSI
+    // omsi-world map_index::tile_row_objects (d0 = offset.start − chain_offset).
+    const startSpline = t.splines[a.splineIndex];
+    const chainOffset = startSpline ? startSpline.chainOffset : 0;
+    const d0 = a.startDist - chainOffset;
     const interval = Math.max(a.interval, 0);
     const dists: number[] = [];
-    if (interval <= 1e-6) dists.push(a.startDist);
+    if (interval <= 1e-6) dists.push(d0);
     else {
-      const n = Math.min(2000, Math.floor(Math.max(a.range, 0) / interval + 1e-6));
-      for (let j = 0; j <= n; j++) dists.push(a.startDist + j * interval);
+      const n = Math.min(4096, Math.floor(Math.max(a.range, 0) / interval + 1e-6));
+      for (let j = 0; j <= n; j++) dists.push(d0 + j * interval);
     }
     for (const dChain of dists) {
+      // objekty před začátkem tohoto splajnu patří předchozí dlaždici
+      if (dChain < -1e-6) continue;
       // najdi splajn v řetězci (v rámci dlaždice) a lokální vzdálenost
       let acc = 0, guard = 0, local = -1;
-      let sp: MapSpline | undefined = t.splines[a.splineIndex];
+      let sp: MapSpline | undefined = startSpline;
       while (guard++ < 600 && sp) {
         const Lsp: number = Math.max(sp.length, 0);
         if (dChain <= acc + Lsp + 1e-6) { local = dChain - acc; break; }

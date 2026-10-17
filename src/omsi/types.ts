@@ -67,6 +67,14 @@ export interface MapSpline {
   /** [spline_h]: celkové převýšení po délce (metry). Výška běží jako kubika mezi
    *  oběma gradienty a končí přesně o tolik výš. null = běžný [spline] (parabola). */
   deltaH: number | null;
+  /**
+   * Kumulativní offset tohoto splajnu v řetězci (metry) = vzdálenost začátku
+   * tohoto splajnu od začátku CELÉHO řetězce (přes dlaždice). V OMSI uložen jako
+   * `tex_offset` (poslední trojice čísel [spline] záznamu; verze ≥11). Používá se
+   * k umístění řad [splineAttachement(_repeater)]: vzdálenost objektu podél tohoto
+   * splajnu = startDist − chainOffset + j·interval. 0 = začátek řetězce.
+   */
+  chainOffset: number;
   sectionIndex: number;
   pathIndex: number;
 }
