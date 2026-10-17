@@ -132,14 +132,31 @@ Berlin-Spandau matches the owner's reported reference (~369 tiles / 30,310 objec
   `mostm` 504×75×291, quarry `kamenolom`, hall `bw_hall_grey_1` are untouched).
   Berlin-Spandau 60-tile slice: spike gone, scene clean, warnings logged.
 
-### D4 — No frustum culling / no visibility management  — NOT YET FIXED
-- **Where:** `src/viewport/viewport.ts` — `inst.frustumCulled = false`; no spatial
-  index, no LOD, all tiles' terrain + objects always in scene.
-- **Root cause:** Every instanced mesh, 329 terrain meshes (1.22M verts), and
-  2,486 spline meshes are always submitted regardless of camera.
-- **Severity:** High for very large maps (frame-rate / GPU memory at 369 tiles).
-- **Next step:** Per-tile culling (bounding spheres), re-enable frustum culling
-  with correct per-instance bounds, consider off-thread/chunked scene build.
+### D4 — No frustum culling / no visibility management  — FIXED
+- **Where:** `src/viewport/viewport.ts`.
+- **Root cause:** Objects were instanced **globally by `.sco` path** (one
+  `InstancedMesh` per model spanning the whole map) → its bounding volume covered
+  the entire map, so `frustumCulled` was disabled and every instanced mesh was
+  submitted every frame regardless of camera. Terrain/splines were already
+  per-mesh frustum-culled, but objects (the bulk) were not.
+- **Fix:** Reorganised the scene into **one `THREE.Group` per tile** (terrain +
+  that tile's objects, attachments and splines), objects now instanced
+  **per-tile-per-path**. Each frame `updateVisibility()` builds the camera
+  frustum and toggles `group.visible` per tile against a conservative per-tile
+  bounding `Sphere` (`tileSphere`: tile footprint + 60 m margin, 340 m vertical
+  half-extent so tall buildings/towers never false-cull). Three then skips whole
+  off-screen tiles before per-mesh work. Picking (`pickObject`,
+  `visibleSplineObjects`) and ground raycast skip hidden tiles. A small HUD shows
+  FPS + visible/total tiles. No geometry is guessed; the sphere is derived from
+  the known tile grid.
+- **Verification (Grundorf, dev viewport, real assets):** 114/114 models,
+  coherent scene; HUD **19/19 tiles at overview → 15/19 when zoomed in** (visible
+  count tracks the frustum), 140+ FPS, selection works (picked `Tree_Small_03`,
+  full inspector), no runtime errors (only the pre-existing benign texture 404s).
+  Mechanism is O(tiles)/frame and only visible tiles submit draw calls, so the
+  benefit scales to Berlin-Spandau's 369 tiles when zoomed/panned.
+- **Next (optional):** LOD / distance culling, off-thread chunked build,
+  incremental count-changing edits (still full-rebuild).
 
 ### D5 — Silent data gaps; arbitrary dev tile cap  — PARTIALLY ADDRESSED
 - `loadMapFromOmsiDev(maxTiles=25)` caps tiles in the browser dev path — an

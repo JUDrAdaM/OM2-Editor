@@ -2,6 +2,31 @@
 
 See `AUDIT.md` for the full defect list and root-cause evidence.
 
+## Session 2026-10-17 (D4 — per-tile frustum culling + visibility)
+
+The long-pending performance task. Previously objects were instanced **globally
+by `.sco` path**, so each `InstancedMesh` spanned the whole map and could not be
+frustum-culled (`frustumCulled = false`) — the whole scene was submitted every
+frame.
+
+- **Scene reorganised into one `THREE.Group` per tile** (terrain + the tile's
+  objects, attachments and splines); objects instanced **per-tile-per-path**.
+- **`updateVisibility()`** (each frame) builds the camera frustum and toggles
+  `group.visible` per tile against a conservative per-tile bounding `Sphere`
+  (`tileSphere`: footprint + 60 m horizontal margin, 340 m vertical half-extent
+  → tall buildings/towers never false-cull). Off-screen tiles submit no draw
+  calls. Picking + ground raycast skip hidden tiles.
+- **HUD** (FPS · visible/total tiles) added to the viewport as live proof.
+- Verified on Grundorf (real assets): 114/114 models, coherent scene, HUD
+  **19/19 → 15/19** when zooming in, 140+ FPS, selection works, no runtime errors
+  (only the known benign texture 404s). O(tiles)/frame — scales to Berlin's 369.
+
+### Known limitations / next
+- Count-changing edits (delete/duplicate/place) still full-rebuild.
+- Optional: LOD / distance culling, off-thread chunked scene build.
+
+---
+
 ## Session 2026-10-17 (D11 — render spline attachments & attachObj)
 
 Verified against openOMSI (`omsi-world/map_index.rs`, `omsi-scene/stage.rs`,
