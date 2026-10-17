@@ -71,6 +71,27 @@ export interface MapSpline {
   pathIndex: number;
 }
 
+/** [splineAttachement]: řada objektů podél splajnu (lampy, stožáry, značky, parkování). */
+export interface SplineAttachment {
+  /** Cesta k .sco objektu. */
+  path: string;
+  /** Index splajnu v tile.splines, podél kterého se řada umisťuje. */
+  splineIndex: number;
+  /** Příčný offset (vpravo od směru splajnu, metry). */
+  lateral: number;
+  /** Výška nad splajnem (metry). */
+  height: number;
+  /** Vzdálenost prvního objektu od začátku řetězce splajnu (metry). */
+  startDist: number;
+  /** Natočení objektu vůči směru splajnu (stupně). */
+  heading: number;
+  /** Rozestup mezi objekty (metry); 0 = jeden objekt. */
+  interval: number;
+  /** Dosah řady od prvního objektu (metry). */
+  range: number;
+  sectionIndex: number;
+}
+
 /** Jedna dlaždice mapy. */
 export interface MapTile {
   /** Souřadnice dlaždice v mřížce (z global.cfg). */
@@ -84,6 +105,8 @@ export interface MapTile {
   objects: MapObject[];
   /** Odvozený pohled – splajny. */
   splines: MapSpline[];
+  /** Odvozený pohled – řady objektů podél splajnů ([splineAttachement]). */
+  splineAttachments: SplineAttachment[];
   /** Odkazy na textury terénu (groundtex), pořadí = index. */
   groundTextures: string[];
   /** Výškmapa terénu (pokud existuje *.terrain soubor). */

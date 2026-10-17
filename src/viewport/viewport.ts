@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { TILE_SIZE } from "../omsi/types";
-import type { OmsiMap, MapObject, MapSpline, MapTile } from "../omsi/types";
+import type { OmsiMap, MapObject, MapSpline, MapTile, SplineAttachment } from "../omsi/types";
 import {
   setObjectField, setSplineField, deleteObject, deleteSpline,
   duplicateObject, createObject, findTemplateObject, maxId,
@@ -9,7 +9,7 @@ import {
 import { terrainHeightAt } from "../omsi/terrain";
 import { ModelCache } from "./models";
 import type { AssetSource, LoadedModel } from "./models";
-import { SplineCache, buildSplineMesh, splineCenterline } from "./splines";
+import { SplineCache, buildSplineMesh, splineCenterline, splineSampleAt } from "./splines";
 import type { LoadedSpline } from "./splines";
 import { runPool } from "../util/async";
 
@@ -183,7 +183,10 @@ export class Viewport {
     if (!this.modelCache || !this.currentMap) return;
     const token = ++this.loadToken;
     const paths = new Set<string>();
-    for (const t of this.currentMap.tiles) for (const o of t.objects) if (o.path) paths.add(o.path);
+    for (const t of this.currentMap.tiles) {
+      for (const o of t.objects) if (o.path) paths.add(o.path);
+      for (const a of t.splineAttachments) if (a.path) paths.add(a.path);
+    }
     const list = [...paths];
     this.onStatus?.(`Načítám ${list.length} modelů…`);
     // Bounded pool: u velkých map (stovky unikátních .sco) jinak vznikne
@@ -298,6 +301,30 @@ export class Viewport {
       this.pickables.push({ mesh: inst, map: pmap });
     }
 
+    // [splineAttachement] řady (lampy, stožáry, značky) – instancované, nevybíratelné
+    const attByPath = new Map<string, THREE.Matrix4[]>();
+    const dummyA = new THREE.Object3D();
+    for (const t of map.tiles) {
+      for (const a of t.splineAttachments) {
+        if (!a.path || !t.splines[a.splineIndex]) continue;
+        let mats = attByPath.get(a.path);
+        if (!mats) { mats = []; attByPath.set(a.path, mats); }
+        this.collectAttachmentMatrices(t, a, dummyA, mats);
+      }
+    }
+    for (const [p, mats] of attByPath) {
+      const model = this.loadedModels.get(p);
+      if (!model || mats.length === 0) continue;
+      for (const part of model.parts) {
+        const inst = new THREE.InstancedMesh(part.geometry, part.material, mats.length);
+        mats.forEach((m, k) => inst.setMatrixAt(k, m));
+        inst.instanceMatrix.needsUpdate = true;
+        inst.frustumCulled = false;
+        inst.userData.shared = true;
+        this.objectGroup.add(inst);
+      }
+    }
+
     // splajny: reálný mesh z .sli, jinak fallback žlutá čára
     for (let ti = 0; ti < map.tiles.length; ti++) {
       const t = map.tiles[ti];
@@ -376,6 +403,45 @@ export class Viewport {
   private outOfTile(o: MapObject): boolean {
     const e = TILE_SIZE + 1e-3;
     return o.x < -1e-3 || o.x > e || o.y < -1e-3 || o.y > e;
+  }
+
+  /** Spočítá matice instancí pro jednu řadu [splineAttachement] (podél splajnu + chain). */
+  private collectAttachmentMatrices(
+    t: MapTile, a: SplineAttachment,
+    dummy: THREE.Object3D, out: THREE.Matrix4[]
+  ) {
+    const interval = Math.max(a.interval, 0);
+    const dists: number[] = [];
+    if (interval <= 1e-6) dists.push(a.startDist);
+    else {
+      const n = Math.min(2000, Math.floor(Math.max(a.range, 0) / interval + 1e-6));
+      for (let j = 0; j <= n; j++) dists.push(a.startDist + j * interval);
+    }
+    for (const dChain of dists) {
+      // najdi splajn v řetězci (v rámci dlaždice) a lokální vzdálenost
+      let acc = 0, guard = 0, local = -1;
+      let sp: MapSpline | undefined = t.splines[a.splineIndex];
+      while (guard++ < 600 && sp) {
+        const Lsp: number = Math.max(sp.length, 0);
+        if (dChain <= acc + Lsp + 1e-6) { local = dChain - acc; break; }
+        acc += Lsp;
+        const nid: number | null = sp.nextId;
+        const ni: number = nid ? t.splines.findIndex((x) => x.id === nid) : -1;
+        if (ni < 0) { sp = undefined; break; }
+        sp = t.splines[ni];
+      }
+      if (!sp || local < 0) continue;
+      const smp = splineSampleAt(sp, local);
+      dummy.position.set(
+        t.tileX * TILE_SIZE + smp.lx + a.lateral * smp.rx,
+        smp.worldY + a.height,
+        -(t.tileY * TILE_SIZE + smp.ly + a.lateral * smp.ry)
+      );
+      dummy.rotation.set(0, THREE.MathUtils.degToRad(smp.headingDeg + a.heading), 0);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      out.push(dummy.matrix.clone());
+    }
   }
 
   /** Má objekt absolutní výšku (podle načteného modelu)? */

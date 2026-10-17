@@ -86,6 +86,35 @@ export function splineFrames(s: MapSpline, steps: number): SplineFrame[] {
   return frames;
 }
 
+/** Jeden vzorek na ose splajnu ve vzdálenosti `d`: lokální poloha, výška (s.z+sklon),
+ *  příčný vektor „vpravo" a směr tečny (OMSI heading, stupně). Pro umístění řad objektů. */
+export interface SplineSample {
+  lx: number; ly: number; worldY: number; rx: number; ry: number; headingDeg: number;
+}
+export function splineSampleAt(s: MapSpline, d: number): SplineSample {
+  const az = THREE.MathUtils.degToRad(s.rotZ);
+  const L = Math.max(s.length, 1e-4);
+  const dd = Math.min(Math.max(d, 0), L);
+  const curved = Math.abs(s.radius) > 1e-4;
+  const kappa = curved ? SPLINE_DIR / s.radius : 0;
+  const th = az + kappa * dd;
+  let lx: number, ly: number;
+  if (!curved) { lx = s.x + Math.sin(az) * dd; ly = s.y + Math.cos(az) * dd; }
+  else { lx = s.x + (Math.cos(az) - Math.cos(th)) / kappa; ly = s.y + (Math.sin(th) - Math.sin(az)) / kappa; }
+  const rx = Math.cos(th), ry = -Math.sin(th);
+  const g = s.gradientStart / 100, G = s.gradientEnd / 100;
+  let hGrad: number;
+  if (s.deltaH != null) {
+    const dh = s.deltaH;
+    const c = (G - g - (2 * (dh - g * L)) / L) / (L * L);
+    const b = (dh - g * L) / (L * L) - c * L;
+    hGrad = g * dd + b * dd * dd + c * dd * dd * dd;
+  } else {
+    hGrad = (s.gradientStart * dd + ((s.gradientEnd - s.gradientStart) * dd * dd) / (2 * L)) / 100;
+  }
+  return { lx, ly, worldY: s.z + hGrad, rx, ry, headingDeg: THREE.MathUtils.radToDeg(th) };
+}
+
 /** Vhodný počet segmentů podél splajnu podle délky a zakřivení. */
 export function splineSteps(s: MapSpline): number {
   if (Math.abs(s.radius) > 1e-4) {

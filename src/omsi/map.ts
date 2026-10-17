@@ -5,6 +5,7 @@ import type {
   MapTile,
   MapObject,
   MapSpline,
+  SplineAttachment,
   OmsiSection,
 } from "./types";
 
@@ -94,24 +95,72 @@ function deriveSpline(section: OmsiSection, sectionIndex: number): MapSpline | n
   };
 }
 
+/** Verze dlaždice z [version] (ovlivňuje layout záznamů); default 14 (moderní). */
+function tileVersion(sections: OmsiSection[]): number {
+  for (const s of sections) {
+    if (s.name.toLowerCase() === "version") {
+      const v = parseInt((s.values.find((x) => x.trim()) || "").trim(), 10);
+      if (Number.isFinite(v)) return v;
+    }
+  }
+  return 14;
+}
+
+/**
+ * [splineAttachement]: řada objektů podél splajnu. Layout (po řádku s cestou .sco):
+ *   id, splineIndex, lateral, height, startDist, heading, [v>=12: pitch, bank],
+ *   interval, range, [v>=12: tilt], [v>=4: počet stringů + stringy]
+ * [splineAttachement_repeater] (přes hranice dlaždic) zatím vynecháváme.
+ */
+function deriveSplineAttachment(
+  section: OmsiSection,
+  sectionIndex: number,
+  version: number
+): SplineAttachment | null {
+  const pathIndex = findPathLine(section.values, ".sco");
+  if (pathIndex < 0) return null;
+  const v = section.values;
+  const modern = version >= 12 || version === 0;
+  const intervalIdx = pathIndex + (modern ? 9 : 7);
+  return {
+    path: v[pathIndex].trim(),
+    splineIndex: Math.round(num(v[pathIndex + 2])),
+    lateral: num(v[pathIndex + 3]),
+    height: num(v[pathIndex + 4]),
+    startDist: num(v[pathIndex + 5]),
+    heading: num(v[pathIndex + 6]),
+    interval: num(v[intervalIdx]),
+    range: num(v[intervalIdx + 1]),
+    sectionIndex,
+  };
+}
+
 /** Odvodí objekty/splajny/textury ze sekcí dlaždice (sekce = zdroj pravdy). */
 export function deriveTile(tile: MapTile): void {
   const objects: MapObject[] = [];
   const splines: MapSpline[] = [];
+  const splineAttachments: SplineAttachment[] = [];
   const groundTextures: string[] = [];
+  const version = tileVersion(tile.sections);
   tile.sections.forEach((s, i) => {
+    const n = s.name.toLowerCase();
     if (isObjectSection(s.name)) {
       const o = deriveObject(s, i);
       if (o) objects.push(o);
     } else if (isSplineSection(s.name)) {
       const sp = deriveSpline(s, i);
       if (sp) splines.push(sp);
-    } else if (s.name.toLowerCase() === "groundtex") {
-      for (const v of s.values) if (v.trim()) groundTextures.push(v.trim());
+    } else if (n === "splineattachement") {
+      // jen běžné (ne repeater přes hranice dlaždic)
+      const a = deriveSplineAttachment(s, i, version);
+      if (a) splineAttachments.push(a);
+    } else if (n === "groundtex") {
+      for (const val of s.values) if (val.trim()) groundTextures.push(val.trim());
     }
   });
   tile.objects = objects;
   tile.splines = splines;
+  tile.splineAttachments = splineAttachments;
   tile.groundTextures = groundTextures;
 }
 
@@ -130,6 +179,7 @@ export function parseTile(
     sections,
     objects: [],
     splines: [],
+    splineAttachments: [],
     groundTextures: [],
     dirty: false,
   };
