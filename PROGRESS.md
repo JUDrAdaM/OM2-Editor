@@ -2,6 +2,37 @@
 
 See `AUDIT.md` for the full defect list and root-cause evidence.
 
+## Session 2026-10-17 (attachment axis — "buildings stacked on top of each other")
+
+User report: buildings appearing "sideways" and "several buildings on top of
+each other". Root cause found by scanning the live scene (temporary `__scene`
+dev hook): modular buildings were **stacked vertically** instead of placed
+**side-by-side in rows**.
+
+- **The `[new_attachment]` space is Z-up** (openOMSI: *"x right, y forward,
+  z up"*), NOT Y-up like the mesh. So `attach_trans [0,15,0]` is 15 m **forward
+  (horizontal)**, and the height is the **z** component. OMSI builds row/terrace
+  houses and apartment blocks (`bw_row50s`, `wohn_*`) by attaching modules
+  side-by-side via `attach_trans [0,±16,0]`; a gibbet signal hangs at `z≈5`.
+- **We converted the attachment matrix as if it were Y-up** (`S=diag(1,1,-1)`,
+  copied from the mesh conversion), so every horizontal forward offset became a
+  **vertical lift** → modules stacked into towers (one `wohn_03` row became a
+  6-high column at y=33→108; a `bw_row50s` row went *underground* to y=-15), and
+  pole-top signs/signals were dropped to the ground.
+- **Fix** (`models.ts attachmentMatrix`): conjugate the OMSI-space matrix by
+  `B = Rx(-90°)` (OMSI (x,y,z)→three (x,z,-y) — the same map→three mapping)
+  instead of `diag(1,1,-1)`: `M_three = B · M_omsi · B⁻¹`.
+- **Verified in the live scene (Berlin, 25 tiles):** the `wohn_03` column
+  collapsed from 6 stacked (33.7..108.7) to a single instance at that (x,z) with
+  the rest spread horizontally into a row; `bw_row50s` from [33,17,1,-15] to
+  [33]; **buildings below ground: several → 0**; stacked cells 69→17, max tower
+  11→2. Residential streets now show proper terraced **rows**. Grundorf
+  114/114, no regression, no JS errors. Build clean.
+- Note: data scan showed object `rotX`/`rotY` are ~0 (Grundorf 0, Berlin max
+  15°), so the "sideways" look was this same vertical-stack bug, not object tilt.
+
+---
+
 ## Session 2026-10-17 (nested [attachObj] — children of children)
 
 `[attachObj]` children whose parent is itself another `[attachObj]` (a sign on a

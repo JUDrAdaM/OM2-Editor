@@ -27,9 +27,19 @@ export interface LoadedModel {
 }
 
 /**
- * Matice jednoho [new_attachment] bodu ve three-prostoru. OMSI skládá operace
- * v D3D (levotočivý, Y-up): m = step · m, rotace se zápornými úhly. Převedeme na
- * three (pravotočivý) konjugací maticí S=diag(1,1,-1) (převrácení Z jako u meshů).
+ * Matice jednoho [new_attachment] bodu ve three-prostoru.
+ *
+ * POZOR na konvenci: attachment prostor OMSI je **Z-up** (openOMSI: „x vpravo,
+ * y dopředu, z nahoru") – NE Y-up jako samotný mesh. Takže `attach_trans
+ * [0,15,0]` je 15 m DOPŘEDU (vodorovně), ne nahoru, a `[... , z]` je výška.
+ * (Ověřeno: řadové/panelové domy se skládají VEDLE SEBE do řad – `bw_row50s`,
+ * `wohn_*` mají attach_trans [0,±16,0]; semafor na rameni visí v z≈5.)
+ *
+ * Matici složíme v OMSI prostoru (m = step · m, záporné úhly jako openOMSI) a
+ * převedeme do three konjugací bází `B = Rx(−90°)` (OMSI (x,y,z)→three (x,z,−y),
+ * tj. stejné mapování jako map→three): M_three = B · m · B⁻¹. Dřívější konverze
+ * S=diag(1,1,−1) (Y-up, jako mesh) stavěla vodorovné posuny svisle → modulární
+ * domy se stavěly na sebe a značky/semafory padaly k zemi.
  */
 function attachmentMatrix(ops: { op: string; vals: number[] }[]): THREE.Matrix4 {
   const m = new THREE.Matrix4();
@@ -42,8 +52,9 @@ function attachmentMatrix(ops: { op: string; vals: number[] }[]): THREE.Matrix4 
     else continue;
     m.premultiply(step);
   }
-  const S = new THREE.Matrix4().makeScale(1, 1, -1);
-  return S.clone().multiply(m).multiply(S);
+  const B = new THREE.Matrix4().makeRotationX(-Math.PI / 2);     // OMSI z-up → three y-up
+  const Binv = new THREE.Matrix4().makeRotationX(Math.PI / 2);
+  return B.multiply(m).multiply(Binv);
 }
 
 const tgaLoader = new TGALoader();
