@@ -348,7 +348,16 @@ ipcMain.handle("app:getVersion", async () => app.getVersion());
 // Autoupdate (electron-updater, jen v zabalené aplikaci)
 // ---------------------------------------------------------------------------
 function setupAutoUpdate() {
-  if (!app.isPackaged) return;
+  if (!app.isPackaged) {
+    // Ve vývoji (nezabalená app) autoupdate neběží – ať UI dostane čistou hlášku
+    // místo „No handler registered".
+    ipcMain.handle("update:check", async () => ({
+      ok: false,
+      message: "Aktualizace jsou dostupné jen v nainstalované aplikaci (ne ve vývoji).",
+    }));
+    ipcMain.handle("update:install", async () => ({ ok: false }));
+    return;
+  }
   let autoUpdater;
   try {
     ({ autoUpdater } = require("electron-updater"));
@@ -357,6 +366,8 @@ function setupAutoUpdate() {
   }
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
+  // Jsme na prerelease kanálu (alpha/beta) → ber i prerelease vydání z GitHubu.
+  autoUpdater.allowPrerelease = true;
 
   const send = (channel, payload) => {
     if (win && !win.isDestroyed()) win.webContents.send(channel, payload);

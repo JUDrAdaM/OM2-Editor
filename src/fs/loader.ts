@@ -96,6 +96,63 @@ export function isElectronApp(): boolean {
   return !!window.omsiAPI?.isElectron;
 }
 
+// ---------------------------------------------------------------------------
+// Verze aplikace + autoupdate (tenké obaly nad omsiAPI)
+// ---------------------------------------------------------------------------
+
+/** Kanonická verze z package.json (např. „0.0.12-alpha"). Prázdné mimo desktop. */
+export async function getAppVersion(): Promise<string> {
+  if (!window.omsiAPI?.getVersion) return "";
+  try {
+    return await window.omsiAPI.getVersion();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Převede semver na „přívětivou" podobu, kterou používáme v UI:
+ *   0.0.12-alpha   → 0.0.12a   (alpha = „a")
+ *   0.0.12-beta.2  → 0.0.12b   (beta  = „b")
+ *   0.0.12-rc.1    → 0.0.12rc
+ *   1.0.0          → 1.0.0     (stabilní beze změny)
+ * Neznámý tvar vrací beze změny.
+ */
+export function formatVersion(v: string): string {
+  if (!v) return "—";
+  const m = v.match(/^(\d+\.\d+\.\d+)-(alpha|beta|rc)(?:\.\d+)?$/i);
+  if (!m) return v;
+  const suffix: Record<string, string> = { alpha: "a", beta: "b", rc: "rc" };
+  return m[1] + (suffix[m[2].toLowerCase()] ?? "");
+}
+
+/** Lidský název kanálu z verze (pro popisek v Nastavení). */
+export function versionChannel(v: string): string {
+  if (/-alpha(\.\d+)?$/i.test(v)) return "Alpha";
+  if (/-beta(\.\d+)?$/i.test(v)) return "Beta";
+  if (/-rc(\.\d+)?$/i.test(v)) return "Release candidate";
+  if (/^\d+\.\d+\.\d+$/.test(v)) return "Stabilní";
+  return "";
+}
+
+/** Ruční kontrola aktualizací (stav pak přichází přes onUpdateStatus). */
+export async function checkForUpdate(): Promise<{ ok: boolean; message?: string }> {
+  if (!window.omsiAPI?.checkUpdate) {
+    return { ok: false, message: "Aktualizace jsou dostupné jen v desktop aplikaci." };
+  }
+  return window.omsiAPI.checkUpdate();
+}
+
+/** Restartuje a nainstaluje stažené aktualizace. */
+export async function installUpdate(): Promise<void> {
+  await window.omsiAPI?.installUpdate?.();
+}
+
+/** Přihlásí se k odběru stavu aktualizací. Vrací odhlašovací funkci. */
+export function onUpdateStatus(cb: (s: UpdateStatus) => void): () => void {
+  return window.omsiAPI?.onUpdateStatus?.(cb) ?? (() => {});
+}
+
 /** Vrátí detekovaný / uložený kořen OMSI 2 (nebo null). */
 export async function getOmsiRoot(): Promise<string | null> {
   if (!window.omsiAPI?.getRoot) return null;

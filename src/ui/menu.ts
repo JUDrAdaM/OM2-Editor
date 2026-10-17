@@ -5,9 +5,12 @@ import {
   openMapByFolder,
   openMapFolder,
   isElectronApp,
+  getAppVersion,
+  formatVersion,
   type OmsiMapEntry,
   type UpdateStatus,
 } from "../fs/loader";
+import { openSettings } from "./settings";
 import { createDemoMap } from "../omsi/demo";
 import type { OmsiMap } from "../omsi/types";
 
@@ -33,6 +36,7 @@ export class StartMenu {
   private listEl!: HTMLElement;
   private statusEl!: HTMLElement;
   private updateEl!: HTMLElement;
+  private versionEl!: HTMLElement;
   private unsubUpdate: (() => void) | null = null;
 
   constructor(root: HTMLElement, onMap: (map: OmsiMap, status: string) => void) {
@@ -62,7 +66,17 @@ export class StartMenu {
       el("h1", "menu-title", "OM2-Editor"),
       el("div", "menu-subtitle", "Moderní 3D editor map pro OMSI 2")
     );
+    const settingsBtn = el("button", "btn btn-sm", "⚙ Nastavení");
+    settingsBtn.addEventListener("click", () =>
+      openSettings(() => this.refreshRootAndMaps())
+    );
+    header.append(el("div", "spacer"), settingsBtn);
     card.append(header);
+
+    // Verze editoru (vedle hlavičky).
+    this.versionEl = el("div", "menu-version", "");
+    titles.append(this.versionEl);
+    void this.loadVersion();
 
     // Řádek s cestou k OMSI
     const pathRow = el("div", "menu-path");
@@ -98,6 +112,11 @@ export class StartMenu {
 
     screen.append(card);
     this.root.append(screen);
+  }
+
+  private async loadVersion() {
+    const raw = await getAppVersion();
+    this.versionEl.textContent = raw ? "v" + formatVersion(raw) : "";
   }
 
   private async refreshRootAndMaps() {

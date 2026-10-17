@@ -1,6 +1,7 @@
 import { Viewport } from "../viewport/viewport";
 import type { Selection, ObjField, SplField } from "../viewport/viewport";
 import { openMapFolder, saveMap, createAssetSource, loadMapFromOmsiDev } from "../fs/loader";
+import { openSettings } from "./settings";
 import { createDemoMap } from "../omsi/demo";
 import { usedObjectPaths } from "../omsi/map";
 import type { OmsiMap } from "../omsi/types";
@@ -53,9 +54,11 @@ export class EditorApp {
     demoBtn.addEventListener("click", () => this.loadMap(createDemoMap(), "Demo mapa načtena"));
     this.saveBtn = el("button", "btn", "Uložit");
     this.saveBtn.addEventListener("click", () => this.handleSave());
+    const settingsBtn = el("button", "btn", "⚙ Nastavení");
+    settingsBtn.addEventListener("click", () => openSettings());
     this.mapNameEl = el("div", "map-name", "—");
     this.statsEl = el("div", "stats", "");
-    toolbar.append(brand, menuBtn, openBtn, demoBtn, this.saveBtn, this.mapNameEl, el("div", "spacer"), this.statsEl);
+    toolbar.append(brand, menuBtn, openBtn, demoBtn, this.saveBtn, this.mapNameEl, el("div", "spacer"), this.statsEl, settingsBtn);
 
     // --- Body ---
     const body = el("div", "body");
