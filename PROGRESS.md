@@ -2,6 +2,39 @@
 
 See `AUDIT.md` for the full defect list and root-cause evidence.
 
+## Session 2026-10-17 (nested [attachObj] — children of children)
+
+`[attachObj]` children whose parent is itself another `[attachObj]` (a sign on a
+bracket on a pole) or a `[splineAttachement]` anchor were not drawn — only the
+867/1447 Berlin children whose parent is a plain `[object]`. Measured parents:
+867 object, **569 another attachObj (nested, 39%)**, 11 spline-row anchor, 0
+missing, **0 with nonzero pitch/bank** (so pitch/bank skipped — unused here).
+
+- **Global record-pose index + fixed-point resolution** (faithful to openOMSI
+  `omsi-scene/stage.rs::compute_resolved`). `recordPose: id → {worldMatrix, path}`
+  holds every `[object]` pose, every non-repeater `[splineAttachement]` *anchor*
+  (its first placed object, keyed by row id — repeaters never anchor), and each
+  resolved `[attachObj]`. `resolveAttach` is recursive with memoization + a cycle
+  guard; a child registers itself under its id so a grandchild finds it. Child
+  world = `parentPose · parentModel.attachments[attachIndex] · R_Y(childHeading)`
+  — same formula as before, but the parent pose can now be an attachObj or anchor,
+  and uses the parent's full `setObjMatrix` pose (incl. pitch/bank).
+- Parsing: `SplineAttachment` gains `id` + `isRepeater`; `AttachObject` gains
+  `id` (`types.ts`, `map.ts`). `viewport.ts build()`: precompute passes replace
+  the old object-only `parentById`; `collectAttachmentMatrices` now runs once in
+  the precompute (`splineRowMats`), reused for instancing.
+- **Verified on real Berlin-Spandau** (node replica of the fixed-point resolve):
+  **all 1447 attachObj now resolve** (was 867) in 2 passes — +580 objects (569
+  nested + 11 anchors) that were previously invisible, 0 unresolved, no cycles.
+- **Browser (Berlin, 60 tiles):** 568/573 models, coherent city, **no JS errors**,
+  28–45 FPS, no regression. Build clean.
+
+### Known limitations / next
+- attachObj pitch/bank parsed-but-unused (0 in Berlin); add if a map needs it.
+- D4 next: LOD / distance culling for the full 369-tile map.
+
+---
+
 ## Session 2026-10-17 (spline attachment repeaters — cross-tile rows) — v0.0.13-alpha
 
 The last big real gap. `[splineAttachement_repeater]` records (cross-tile

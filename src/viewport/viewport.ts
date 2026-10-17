@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { TILE_SIZE } from "../omsi/types";
-import type { OmsiMap, MapObject, MapSpline, MapTile, SplineAttachment } from "../omsi/types";
+import type { OmsiMap, MapObject, MapSpline, MapTile, SplineAttachment, AttachObject } from "../omsi/types";
 import {
   setObjectField, setSplineField, deleteObject, deleteSpline,
   duplicateObject, createObject, findTemplateObject, maxId,
@@ -278,13 +278,74 @@ export class Viewport {
     const tileMat = new THREE.MeshStandardMaterial({ color: 0x171d26, roughness: 1 });
     const edgeMat = new THREE.LineBasicMaterial({ color: 0x2f3b4d });
 
-    // Rodiče pro [attachObj] – hledání napříč celou mapou (dítě může viset na
-    // objektu z jiné dlaždice), ale instance ukládáme do skupiny deklarující dlaždice.
-    const parentById = new Map<number, { t: MapTile; o: MapObject }>();
-    for (const t of map.tiles) for (const o of t.objects) if (o.id != null) parentById.set(o.id, { t, o });
-
     const dummy = new THREE.Object3D();
     const dummyA = new THREE.Object3D();
+
+    // ---- Předvýpočet pozic řad [splineAttachement] a [attachObj] (napříč mapou) ----
+    // `recordPose`: ID záznamu → světová matice + cesta modelu. Obsahuje objekty,
+    // „kotvy" řad (1. objekt non-repeater [splineAttachement]) a vyřešené [attachObj].
+    // Díky tomu [attachObj] může viset na objektu, na kotvě řady, i na jiném
+    // [attachObj] (vnořené – ~39 % případů). Řešení je fixed-point (rekurze s
+    // memoizací), stejně jako openOMSI compute_resolved.
+    const recordPose = new Map<number, { mat: THREE.Matrix4; path: string }>();
+    // Objekty
+    for (const t of map.tiles) {
+      for (const o of t.objects) {
+        if (o.id == null) continue;
+        const model = this.loadedModels.get(o.path);
+        this.setObjMatrix(dummy, t, o, model?.originRotY ?? 0, model?.absoluteHeight ?? false);
+        if (!recordPose.has(o.id)) recordPose.set(o.id, { mat: dummy.matrix.clone(), path: o.path });
+      }
+    }
+    // Matice řad [splineAttachement] (předpočítané i pro instancování) + kotvy.
+    const splineRowMats = new Map<string, THREE.Matrix4[]>();
+    for (let ti = 0; ti < map.tiles.length; ti++) {
+      const t = map.tiles[ti];
+      for (let ai = 0; ai < t.splineAttachments.length; ai++) {
+        const a = t.splineAttachments[ai];
+        if (!a.path || !t.splines[a.splineIndex]) continue;
+        const mats: THREE.Matrix4[] = [];
+        this.collectAttachmentMatrices(t, a, dummyA, mats);
+        splineRowMats.set(`${ti}:${ai}`, mats);
+        // Kotva = 1. (nejnižší) umístěný objekt non-repeater řady.
+        if (!a.isRepeater && a.id != null && mats.length && !recordPose.has(a.id)) {
+          recordPose.set(a.id, { mat: mats[0], path: a.path });
+        }
+      }
+    }
+    // Index [attachObj] podle ID (pro vnořené rodiče) + rekurzivní resolve.
+    const attachObjById = new Map<number, AttachObject>();
+    for (const t of map.tiles) for (const a of t.attachObjects) if (a.id != null) attachObjById.set(a.id, a);
+    const attachResolved = new Map<AttachObject, THREE.Matrix4>();
+    const resolving = new Set<number>();
+    const resolveAttach = (a: AttachObject): THREE.Matrix4 | null => {
+      if (a.parentId == null) return null;
+      let parent = recordPose.get(a.parentId);
+      if (!parent) {
+        const pa = attachObjById.get(a.parentId);
+        if (!pa || pa === a || resolving.has(a.parentId)) return null; // chybí / cyklus
+        resolving.add(a.parentId);
+        const pm = resolveAttach(pa);
+        resolving.delete(a.parentId);
+        if (!pm) return null;
+        parent = { mat: pm, path: pa.path };
+        if (pa.id != null && !recordPose.has(pa.id)) recordPose.set(pa.id, parent);
+      }
+      const pModel = this.loadedModels.get(parent.path);
+      const attachMat = pModel?.attachments[a.attachIndex] ?? new THREE.Matrix4();
+      const child = parent.mat.clone()
+        .multiply(attachMat)
+        .multiply(new THREE.Matrix4().makeRotationY(THREE.MathUtils.degToRad(a.heading)));
+      if (a.id != null && !recordPose.has(a.id)) recordPose.set(a.id, { mat: child, path: a.path });
+      return child;
+    };
+    for (const t of map.tiles) {
+      for (const a of t.attachObjects) {
+        if (!a.path) continue;
+        const m = resolveAttach(a);
+        if (m) attachResolved.set(a, m);
+      }
+    }
 
     for (let ti = 0; ti < map.tiles.length; ti++) {
       const t = map.tiles[ti];
@@ -361,28 +422,23 @@ export class Viewport {
         this.pickables.push({ mesh: inst, map: pmap, tileIndex: ti });
       }
 
-      // [splineAttachement] (lampy/stožáry/značky) + [attachObj] této dlaždice.
+      // [splineAttachement] (řady podél splajnů) + [attachObj] (zavěšené objekty)
+      // této dlaždice – matice jsou předpočítané výše (vč. vnořených attachObj).
       const attByPath = new Map<string, THREE.Matrix4[]>();
-      for (const a of t.splineAttachments) {
-        if (!a.path || !t.splines[a.splineIndex]) continue;
-        let mats = attByPath.get(a.path);
-        if (!mats) { mats = []; attByPath.set(a.path, mats); }
-        this.collectAttachmentMatrices(t, a, dummyA, mats);
+      const pushMat = (path: string, m: THREE.Matrix4) => {
+        let mats = attByPath.get(path);
+        if (!mats) { mats = []; attByPath.set(path, mats); }
+        mats.push(m);
+      };
+      for (let ai = 0; ai < t.splineAttachments.length; ai++) {
+        const a = t.splineAttachments[ai];
+        const mats = splineRowMats.get(`${ti}:${ai}`);
+        if (!mats) continue;
+        for (const m of mats) pushMat(a.path, m);
       }
       for (const a of t.attachObjects) {
-        if (!a.path || a.parentId == null) continue;
-        const parent = parentById.get(a.parentId);
-        if (!parent) continue;
-        const pModel = this.loadedModels.get(parent.o.path);
-        const attachMat = pModel?.attachments[a.attachIndex] ?? new THREE.Matrix4();
-        const pm = new THREE.Matrix4().makeRotationY(THREE.MathUtils.degToRad(parent.o.rotZ));
-        pm.setPosition(worldPos(parent.t.tileX, parent.t.tileY, parent.o.x, parent.o.y, this.objBaseY(parent.t, parent.o)));
-        const child = pm.clone().multiply(attachMat).multiply(
-          new THREE.Matrix4().makeRotationY(THREE.MathUtils.degToRad(a.heading))
-        );
-        let mats = attByPath.get(a.path);
-        if (!mats) { mats = []; attByPath.set(a.path, mats); }
-        mats.push(child);
+        const m = attachResolved.get(a);
+        if (m) pushMat(a.path, m);
       }
       for (const [p, mats] of attByPath) {
         const model = this.loadedModels.get(p);

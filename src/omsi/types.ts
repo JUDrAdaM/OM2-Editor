@@ -81,6 +81,11 @@ export interface MapSpline {
 
 /** [splineAttachement]: řada objektů podél splajnu (lampy, stožáry, značky, parkování). */
 export interface SplineAttachment {
+  /** ID záznamu řady (pro [attachObj], který visí na „kotvě" = 1. objektu řady). */
+  id: number | null;
+  /** true = [splineAttachement_repeater] (pokračování řady v sousední dlaždici).
+   *  Repeater nikdy netvoří kotvu pro [attachObj] (dle openOMSI). */
+  isRepeater: boolean;
   /** Cesta k .sco objektu. */
   path: string;
   /** Index splajnu v tile.splines, podél kterého se řada umisťuje. */
@@ -102,9 +107,11 @@ export interface SplineAttachment {
 
 /** [attachObj]: objekt zavěšený na bodu [new_attachment] rodičovského objektu. */
 export interface AttachObject {
+  /** Vlastní ID (aby na tomto objektu mohly viset další [attachObj] – vnořené). */
+  id: number | null;
   /** Cesta k .sco. */
   path: string;
-  /** ID rodičovského objektu v mapě. */
+  /** ID rodičovského objektu v mapě (objekt, kotva řady, nebo jiný [attachObj]). */
   parentId: number | null;
   /** Index bodu [new_attachment] rodiče (0-based). */
   attachIndex: number;

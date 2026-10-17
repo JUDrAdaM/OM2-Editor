@@ -154,6 +154,8 @@ function deriveSplineAttachment(
   const modern = version >= 12 || version === 0;
   const intervalIdx = pathIndex + (modern ? 9 : 7);
   return {
+    id: toInt(v[pathIndex + 1]),
+    isRepeater: section.name.toLowerCase() === "splineattachement_repeater",
     path: v[pathIndex].trim(),
     splineIndex: Math.round(num(v[pathIndex + 2])),
     lateral: num(v[pathIndex + 3]),
@@ -181,6 +183,7 @@ function deriveAttachObject(
   // Starší verze (v<10) adresují rodiče indexem záznamu – zatím nepodporováno.
   if (version < 10 && version !== 0) return null;
   return {
+    id: toInt(v[pathIndex + 1]),
     path: v[pathIndex].trim(),
     parentId: toInt(v[pathIndex + 2]),
     attachIndex: Math.max(0, Math.round(num(v[pathIndex + 4]))),
