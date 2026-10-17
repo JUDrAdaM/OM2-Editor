@@ -2,6 +2,29 @@
 
 See `AUDIT.md` for the full defect list and root-cause evidence.
 
+## Session 2026-10-17 (crossing [crossing_heightdeformation] + rotX/rotY)
+
+- **Object pitch/bank (rotX/rotY)** now applied at render (`setObjMatrix`):
+  heading·pitch·bank via composed matrix; objects without tilt unchanged.
+- **Crossing height deformation** implemented (faithful port of openOMSI
+  `place.rs warp_crossings` / `field_height`). `[crossing_heightdeformation]` in
+  a .sco names a coarse height-field **mesh**; every plate vertex is raised by
+  the field's height at its (x,z) (barycentric interp over field triangles, max
+  over covering tris, miss → unchanged). Terrain plays no part. Applied to raw
+  Y-up positions before `buildGeometry` bakes the origin, in the same frame as
+  the field. Axis map: our Y-up (height=Y, plane=X,Z) ↔ openOMSI Z-up, so
+  openOMSI (x,y)→our (x,z), openOMSI z(height)→our y.
+  - Parse: `sco.ts` `crossingDeform`; apply: `models.ts`
+    `crossingFieldHeight` + `applyCrossingDeform`.
+  - **Verified on real Berlin-Spandau crossings** (node replica over the actual
+    .o3d): `Kreuz_FernbhfSpandau` 752/3001 verts raised (25%), Δ 0.01..0.30 m
+    (kerbs/camber); `Kreuz_AmJul_Breite` 631/1378 (46%), Δ −1.35..0.03 m (an arm
+    dropping to its road); `Einm_Stresowplatz` 0% (its field doesn't cover the
+    plate — openOMSI would leave it unchanged too). Math matches openOMSI exactly.
+  - Browser: Berlin-Spandau still renders, no errors, no regression.
+
+---
+
 ## Session 2026-10-17 (D4 — per-tile frustum culling + visibility)
 
 The long-pending performance task. Previously objects were instanced **globally

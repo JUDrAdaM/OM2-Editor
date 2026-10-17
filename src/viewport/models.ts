@@ -180,6 +180,50 @@ function buildGeometry(mesh: O3DMesh, originTrans: [number, number, number], ori
   return geo;
 }
 
+/**
+ * Výška pole [crossing_heightdeformation] v bodě (x,z) roviny – barycentrická
+ * interpolace přes trojúhelníky pole; max přes pokrývající; miss → null.
+ * Náš mesh je Y-up (výška = Y, rovina = X,Z); openOMSI počítá v Z-up, proto
+ * openOMSI (x,y)=naše (x,z), openOMSI z(výška)=naše y. (openOMSI place.rs field_height.)
+ */
+function crossingFieldHeight(field: O3DMesh, qx: number, qz: number): number | null {
+  const P = field.positions, I = field.indices, T = field.triangleCount;
+  let best: number | null = null;
+  for (let t = 0; t < T; t++) {
+    const ia = I[t * 3], ib = I[t * 3 + 1], ic = I[t * 3 + 2];
+    const ax = P[ia * 3], ay = P[ia * 3 + 1], az = P[ia * 3 + 2];
+    const bx = P[ib * 3], by = P[ib * 3 + 1], bz = P[ib * 3 + 2];
+    const cx = P[ic * 3], cy = P[ic * 3 + 1], cz = P[ic * 3 + 2];
+    const det = (bx - ax) * (cz - az) - (cx - ax) * (bz - az);
+    if (Math.abs(det) < 1e-9) continue;
+    const l1 = ((bx - ax) * (qz - az) - (qx - ax) * (bz - az)) / det;
+    const l2 = ((qx - ax) * (cz - az) - (cx - ax) * (qz - az)) / det;
+    const l0 = 1 - l1 - l2;
+    if (l0 >= -1e-4 && l1 >= -1e-4 && l2 >= -1e-4) {
+      const h = l0 * ay + l2 * by + l1 * cy; // výška = Y
+      best = best === null ? h : Math.max(best, h);
+    }
+  }
+  return best;
+}
+
+/**
+ * „Drapne" desku křižovatky na její výškové pole: každý vrchol se zvedne o výšku
+ * pole v jeho (x,z). Vrchol, který pole nepokrývá, zůstane beze změny. Terén
+ * nehraje roli (viz openOMSI warp_crossings). Aplikuje se na RAW pozice (Y-up)
+ * před zapečením originu v buildGeometry, kde je stejný rámec jako pole.
+ */
+function applyCrossingDeform(mesh: O3DMesh, field: O3DMesh): number {
+  if (field.triangleCount === 0) return 0;
+  const P = mesh.positions;
+  let moved = 0;
+  for (let i = 0; i < mesh.vertexCount; i++) {
+    const d = crossingFieldHeight(field, P[i * 3], P[i * 3 + 2]);
+    if (d !== null && Math.abs(d) > 0.001) { P[i * 3 + 1] += d; moved++; }
+  }
+  return moved;
+}
+
 /** Načte mesh objektu: nejdřív zkompilovaný .o3d, při selhání textový .x. */
 async function loadMesh(src: AssetSource, scoDir: string, file: string): Promise<{ mesh: O3DMesh; space: MeshSpace } | null> {
   const stem = baseOf(file).replace(/\.[^.]+$/, "");
@@ -312,9 +356,18 @@ export async function loadModel(src: AssetSource, scoPath: string): Promise<Load
     if (parts.length) return { parts, originRotY: 0, absoluteHeight: sco.absHeight, attachments: sco.attachments.map(attachmentMatrix) };
   }
 
+  // [crossing_heightdeformation]: hrubé výškové pole (mesh), kterým se „drapne"
+  // deska křižovatky (kameny, klopení, ramena klesající na silnice).
+  let deformField: O3DMesh | null = null;
+  if (sco.crossingDeform) {
+    const f = await loadMesh(src, scoDir, sco.crossingDeform);
+    deformField = f?.mesh ?? null;
+  }
+
   for (const meshDef of sco.meshes) {
     const loaded = await loadMesh(src, scoDir, meshDef.file);
     if (!loaded) continue;
+    if (deformField) applyCrossingDeform(loaded.mesh, deformField);
     const origin: [number, number, number] = loaded.space === "o3d" ? meshDef.originTrans : [0, 0, 0];
     const rotY = loaded.space === "o3d" ? meshDef.originRotY : 0;
     const materials = await buildMaterials(src, scoDir, loaded.mesh, meshDef.matls);

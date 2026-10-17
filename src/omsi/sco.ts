@@ -47,6 +47,9 @@ export interface ScoInfo {
   /** Body [new_attachment] (pro [attachObj]): každý je seznam operací attach_trans /
    *  attach_rot_x/y/z v pořadí, jak stojí v souboru. */
   attachments: { op: string; vals: number[] }[][];
+  /** [crossing_heightdeformation]: jméno mesh souboru s hrubým výškovým polem.
+   *  Každý vrchol desky křižovatky se zvedne o výšku tohoto pole v daném (x,y). */
+  crossingDeform?: string;
 }
 
 /**
@@ -62,6 +65,7 @@ export function parseSco(text: string): ScoInfo {
   let currentLod = Infinity;
   let cur: ScoMesh | null = null;
   let absHeight = false;
+  let crossingDeform: string | undefined;
   const attachments: { op: string; vals: number[] }[][] = [];
   let curAttach: { op: string; vals: number[] }[] | null = null;
   const ATTACH_ARGS: Record<string, number> = {
@@ -78,6 +82,9 @@ export function parseSco(text: string): ScoInfo {
     }
     if (n === "absheight" || n === "path") {
       absHeight = true;
+    } else if (n === "crossing_heightdeformation") {
+      const f = firstVal(s);
+      if (f) crossingDeform = f;
     } else if (n === "lod") {
       const v = firstVal(s);
       currentLod = v != null ? (parseFloat(v) || 0) : Infinity;
@@ -143,12 +150,12 @@ export function parseSco(text: string): ScoInfo {
     }
   }
 
-  if (all.length === 0) return { meshes: [], trees, absHeight, attachments };
+  if (all.length === 0) return { meshes: [], trees, absHeight, attachments, crossingDeform };
 
   // Vyber nejvyšší detail: skupina meshů s nejvyšší LOD hodnotou.
   // (Bez [LOD] mají všechny Infinity → vezmou se všechny.)
   let maxLod = -Infinity;
   for (const m of all) if (m.lod > maxLod) maxLod = m.lod;
   const meshes = all.filter((m) => m.lod === maxLod);
-  return { meshes, trees, absHeight, attachments };
+  return { meshes, trees, absHeight, attachments, crossingDeform };
 }
