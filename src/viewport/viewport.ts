@@ -496,14 +496,23 @@ export class Viewport {
     else mat?.dispose?.();
   }
 
+  private readonly _rTmp = new THREE.Matrix4();
+
   private setObjMatrix(dummy: THREE.Object3D, t: MapTile, o: MapObject, originRotY: number, absolute: boolean) {
     // Absolutní výška (křižovatky/výhybky/[absheight]): z přímo, bez terénu.
     // Jinak objekt stojí na terénu: výška = terén + o.z.
     const baseY = absolute ? o.z : tileHeight(t, o.x, o.y) + o.z;
-    dummy.position.copy(worldPos(t.tileX, t.tileY, o.x, o.y, baseY));
-    dummy.rotation.set(0, THREE.MathUtils.degToRad(o.rotZ + originRotY), 0);
-    dummy.scale.set(1, 1, 1);
-    dummy.updateMatrix();
+    // OMSI je Z-up (X,Y vodorovně, Z výška); mapování map→three je vlastní rotace:
+    //   rotZ (heading, kolem svislé) → three Y
+    //   rotX (pitch, kolem mapové X) → three X
+    //   rotY (bank,  kolem mapové Y) → three −Z
+    // Pořadí jako v OMSI: heading · pitch · bank. Pro objekty bez náklonu
+    // (rotX=rotY=0) je výsledek shodný s dřívější čistou rotací kolem Y.
+    const m = dummy.matrix;
+    m.makeRotationY(THREE.MathUtils.degToRad(o.rotZ + originRotY));
+    if (o.rotX) m.multiply(this._rTmp.makeRotationX(THREE.MathUtils.degToRad(o.rotX)));
+    if (o.rotY) m.multiply(this._rTmp.makeRotationZ(THREE.MathUtils.degToRad(-o.rotY)));
+    m.setPosition(worldPos(t.tileX, t.tileY, o.x, o.y, baseY));
   }
 
   /** Objekt leží mimo svoji dlaždici (lokální x/y mimo [0,300])? OMSI ho nekreslí. */
