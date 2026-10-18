@@ -36,6 +36,7 @@ export class EditorApp {
   private saveBtn!: HTMLButtonElement;
   private paletteListEl!: HTMLElement;
   private roadListEl!: HTMLElement;
+  private paintListEl!: HTMLElement;
   private placeBanner!: HTMLElement;
   private filterEl!: HTMLInputElement;
 
@@ -123,6 +124,22 @@ export class EditorApp {
     brushRow.append(brushLbl, brush);
     terrain.append(terrRow, brushRow);
     sidebar.append(terrain);
+
+    // Malování povrchu (dlažba / cesty – výběr textury z groundtex palety)
+    sidebar.append(el("div", "panel-title", "Malování povrchu"));
+    const paint = el("div", "palette");
+    const paintRow = el("div", "palette-add");
+    const paintInput = el("input", "edit-input") as HTMLInputElement;
+    paintInput.placeholder = "Texture\\…\\dlazba.bmp";
+    const paintBtn = el("button", "btn btn-sm", "Malovat");
+    paintBtn.addEventListener("click", () => {
+      const p = paintInput.value.trim();
+      if (p) this.viewport.setPaintMode(p);
+    });
+    paintRow.append(paintInput, paintBtn);
+    this.paintListEl = el("div", "palette-list");
+    paint.append(paintRow, this.paintListEl);
+    sidebar.append(paint);
 
     // Strom
     sidebar.append(el("div", "panel-title", "Dlaždice a objekty"));
@@ -218,6 +235,7 @@ export class EditorApp {
     this.renderTree(map);
     this.renderPalette("");
     this.renderRoadPalette();
+    this.renderPaintPalette();
     this.renderInspector(null);
     this.updateSaveButton();
     this.setStatus(status);
@@ -257,6 +275,23 @@ export class EditorApp {
       this.roadListEl.append(item);
     }
     if (paths.length === 0) this.roadListEl.append(el("div", "hint", "Žádné silnice v mapě."));
+  }
+
+  private renderPaintPalette() {
+    this.paintListEl.innerHTML = "";
+    if (!this.map) return;
+    // Detailní textury z global.cfg [groundtex] (dlažba, štěrk…); index 0 = tráva.
+    const seen = new Set<string>();
+    for (const g of this.map.groundTex) {
+      const tex = g.main;
+      if (!tex || seen.has(tex.toLowerCase())) continue;
+      seen.add(tex.toLowerCase());
+      const item = el("div", "palette-item", baseName(tex));
+      item.title = tex;
+      item.addEventListener("click", () => this.viewport.setPaintMode(tex));
+      this.paintListEl.append(item);
+    }
+    if (seen.size === 0) this.paintListEl.append(el("div", "hint", "Zadej cestu k textuře výše."));
   }
 
   private updatePlaceBanner() {

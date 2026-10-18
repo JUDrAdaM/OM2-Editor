@@ -95,6 +95,14 @@ export class Viewport {
   private terrainTouched = new Set<number>(); // dlaždice změněné tahem (pro rebuild)
   /** Terénní mesh podle indexu dlaždice (pro živou deformaci). */
   private terrainMeshes = new Map<number, THREE.Mesh>();
+  /** Malování povrchu: načtená detailní textura (dlažba atd.). */
+  private paintTexture: THREE.Texture | null = null;
+  /** Perzistentní malovaná maska dlaždice (canvas); přežívá přestavby scény. */
+  private paintMasks = new Map<number, HTMLCanvasElement>();
+  /** Overlay vrstvy v aktuální scéně (vytváří se při build() z masek). */
+  private paintLayers = new Map<number, { tex: THREE.CanvasTexture; mesh: THREE.Mesh }>();
+  private paintStroke = false;
+  private static readonly PAINT_RES = 256;
 
   private modelCache: ModelCache | null = null;
   private loadedModels = new Map<string, LoadedModel | null>();
@@ -364,6 +372,7 @@ export class Viewport {
   setMap(map: OmsiMap) {
     this.currentMap = map;
     this.clearHistory();
+    this.paintMasks.clear(); this.paintLayers.clear(); this.paintTexture = null;
     this.clearSelection(false);
     this.loadedModels.clear();
     this.loadedSplines.clear();
@@ -665,6 +674,8 @@ export class Viewport {
       this.worldGroup.add(group);
       this.tileGroups[ti] = { group, sphere: this.tileSphere(t) };
     }
+    // Malované overlay vrstvy znovu vytvoř z perzistentních masek.
+    this.rebuildPaintOverlays();
   }
 
   /** Konzervativní obalová koule dlaždice (footprint + velkorysý vertikální rozsah). */
@@ -961,6 +972,13 @@ export class Viewport {
       if (p) this.applyTerrainBrush(p);
       return;
     }
+    if (this.tool === "paint") {
+      this.paintStroke = true;
+      this.controls.enabled = false;
+      const p = this.raycastGround();
+      if (p) this.applyPaintBrush(p);
+      return;
+    }
 
     const objHit = this.pickObject();
     if (objHit) {
@@ -988,11 +1006,11 @@ export class Viewport {
   };
 
   private onPointerMove = (e: PointerEvent) => {
-    if (this.terrainStroke && this.currentMap) {
+    if ((this.terrainStroke || this.paintStroke) && this.currentMap) {
       this.updatePointer(e);
       this.raycaster.setFromCamera(this.pointer, this.camera);
       const p = this.raycastGround();
-      if (p) this.applyTerrainBrush(p);
+      if (p) { if (this.terrainStroke) this.applyTerrainBrush(p); else this.applyPaintBrush(p); }
       return;
     }
     if (!this.dragging || !this.selection || !this.currentMap) return;
@@ -1019,6 +1037,7 @@ export class Viewport {
 
   private onPointerUp = () => {
     if (this.terrainStroke) { this.endTerrainStroke(); return; }
+    if (this.paintStroke) { this.paintStroke = false; this.controls.enabled = true; this.onStatus?.("Povrch namalován."); return; }
     if (!this.dragging) return;
     const moved = this.dragMoved;
     const sel = this.selection;
@@ -1151,7 +1170,7 @@ export class Viewport {
     this.tool = null; this.roadPath = null; this.roadStart = null; this.lastRoad = null;
     this.placePath = null;
     if (this.terrainStroke) this.endTerrainStroke();
-    this.terrainStroke = false;
+    this.terrainStroke = false; this.paintStroke = false;
     this.renderer.domElement.style.cursor = "";
   }
 
@@ -1261,6 +1280,119 @@ export class Viewport {
       this.build();
       this.onChange?.(null);
       this.onStatus?.("Terén upraven. (Objekty dosedly na nový terén.)");
+    }
+  }
+
+  // ---------- Nástroj: Malování povrchu (dlažba, cesty) ----------
+
+  /** Zapne malování povrchu zvolenou detailní texturou (groundtex nebo cesta). */
+  async setPaintMode(texPath: string | null) {
+    this.placePath = null; this.roadPath = null; this.tool = texPath ? "paint" : null;
+   
+    this.renderer.domElement.style.cursor = texPath ? "crosshair" : "";
+    if (!texPath) { this.onStatus?.("Malování povrchu ukončeno."); return; }
+    // načti texturu (relativní ke kořeni OMSI – groundtex)
+    this.paintTexture = null;
+    if (this.assetSrc) {
+      try {
+        const buf = await this.assetSrc.readFile(texPath);
+        if (buf) {
+          const tex = decodeTexture(texPath, buf);
+          if (tex) { tex.colorSpace = THREE.SRGBColorSpace; tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.anisotropy = 4; this.paintTexture = tex; }
+        }
+      } catch { /* ignore */ }
+    }
+    this.onStatus?.(`Malování povrchu (${texPath.split("\\").pop()}, štětec ${this.brushRadius} m): táhni po terénu. Esc ukončí.`);
+  }
+
+  /** Geometrie terénu dlaždice s volitelným zvednutím (pro malovaný overlay). */
+  private terrainGeometry(t: MapTile, lift: number): THREE.BufferGeometry {
+    const terr = t.terrain!;
+    const n = terr.size, step = TILE_SIZE / (n - 1), rep = Viewport.GROUND_REPEAT;
+    const pos = new Float32Array(n * n * 3), uvs = new Float32Array(n * n * 2), uv1 = new Float32Array(n * n * 2);
+    for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+      const idx = j * n + i;
+      const w = worldPos(t.tileX, t.tileY, i * step, j * step, (terr.heights[idx] as number) + lift);
+      pos[idx * 3] = w.x; pos[idx * 3 + 1] = w.y; pos[idx * 3 + 2] = w.z;
+      uvs[idx * 2] = (i / (n - 1)) * rep; uvs[idx * 2 + 1] = (j / (n - 1)) * rep;
+      uv1[idx * 2] = i / (n - 1); uv1[idx * 2 + 1] = j / (n - 1);
+    }
+    const indices: number[] = [];
+    for (let j = 0; j < n - 1; j++) for (let i = 0; i < n - 1; i++) {
+      const a = j * n + i, b = j * n + i + 1, c = (j + 1) * n + i, d = (j + 1) * n + i + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
+    geo.setAttribute("uv1", new THREE.BufferAttribute(uv1, 2));
+    geo.setIndex(indices);
+    geo.computeVertexNormals();
+    return geo;
+  }
+
+  /** Perzistentní maska dlaždice (canvas); vytvoří on-demand. */
+  private getPaintMask(ti: number): HTMLCanvasElement | null {
+    if (!this.currentMap?.tiles[ti]?.terrain) return null;
+    let canvas = this.paintMasks.get(ti);
+    if (!canvas) {
+      canvas = document.createElement("canvas");
+      canvas.width = canvas.height = Viewport.PAINT_RES;
+      this.paintMasks.set(ti, canvas);
+    }
+    return canvas;
+  }
+  /** Zajistí overlay mesh v aktuální scéně pro dlaždici (z její masky). */
+  private ensurePaintOverlay(ti: number): { tex: THREE.CanvasTexture; mesh: THREE.Mesh } | null {
+    let layer = this.paintLayers.get(ti);
+    if (layer) return layer;
+    const t = this.currentMap?.tiles[ti];
+    const canvas = this.paintMasks.get(ti);
+    if (!t || !t.terrain || !canvas || !this.paintTexture) return null;
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.flipY = false;
+    tex.channel = 1; // alphaMap používá uv1 (0..1 přes dlaždici)
+    const mat = new THREE.MeshStandardMaterial({
+      map: this.paintTexture, alphaMap: tex, transparent: true, depthWrite: false,
+      roughness: 1, side: THREE.DoubleSide,
+    });
+    const mesh = new THREE.Mesh(this.terrainGeometry(t, 0.12), mat);
+    mesh.renderOrder = 2; // nad terénem i silnicemi
+    const group = this.tileGroups[ti]?.group;
+    if (group) group.add(mesh);
+    layer = { tex, mesh };
+    this.paintLayers.set(ti, layer);
+    return layer;
+  }
+  /** Po přestavbě scény znovu vytvoří overlay vrstvy ze všech masek. */
+  private rebuildPaintOverlays() {
+    this.paintLayers.clear();
+    if (!this.paintTexture) return;
+    for (const ti of this.paintMasks.keys()) this.ensurePaintOverlay(ti);
+  }
+
+  /** Namaluje do masky dlaždic v dosahu štětce. */
+  private applyPaintBrush(p: THREE.Vector3) {
+    if (!this.currentMap) return;
+    const wx = p.x, wy = -p.z, r = this.brushRadius, R = Viewport.PAINT_RES;
+    for (let ti = 0; ti < this.currentMap.tiles.length; ti++) {
+      const t = this.currentMap.tiles[ti];
+      if (!t.terrain) continue;
+      const ox = t.tileX * TILE_SIZE, oy = t.tileY * TILE_SIZE;
+      if (wx + r < ox || wx - r > ox + TILE_SIZE || wy + r < oy || wy - r > oy + TILE_SIZE) continue;
+      const canvas = this.getPaintMask(ti);
+      if (!canvas) continue;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) continue;
+      const cx = ((wx - ox) / TILE_SIZE) * R, cy = ((wy - oy) / TILE_SIZE) * R, cr = (r / TILE_SIZE) * R;
+      const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(cr, 1));
+      grad.addColorStop(0, "rgba(255,255,255,0.4)");
+      grad.addColorStop(1, "rgba(255,255,255,0)");
+      ctx.globalCompositeOperation = "lighter";
+      ctx.fillStyle = grad;
+      ctx.beginPath(); ctx.arc(cx, cy, Math.max(cr, 1), 0, Math.PI * 2); ctx.fill();
+      const layer = this.ensurePaintOverlay(ti);
+      if (layer) layer.tex.needsUpdate = true;
     }
   }
 
