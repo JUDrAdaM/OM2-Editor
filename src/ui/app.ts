@@ -103,6 +103,27 @@ export class EditorApp {
     roads.append(roadRow, this.roadListEl);
     sidebar.append(roads);
 
+    // Úprava terénu (štětec výšky)
+    sidebar.append(el("div", "panel-title", "Úprava terénu"));
+    const terrain = el("div", "palette");
+    const terrRow = el("div", "palette-add");
+    const upBtn = el("button", "btn btn-sm", "▲ Zvýšit");
+    upBtn.addEventListener("click", () => this.viewport.setTerrainMode(1));
+    const downBtn = el("button", "btn btn-sm", "▼ Snížit");
+    downBtn.addEventListener("click", () => this.viewport.setTerrainMode(-1));
+    terrRow.append(upBtn, downBtn);
+    const brushRow = el("div", "palette-add");
+    const brush = el("input", "edit-input") as HTMLInputElement;
+    brush.type = "range"; brush.min = "5"; brush.max = "120"; brush.value = "25";
+    const brushLbl = el("span", "hint", "Štětec: 25 m");
+    brush.addEventListener("input", () => {
+      this.viewport.setBrush(Number(brush.value));
+      brushLbl.textContent = `Štětec: ${brush.value} m`;
+    });
+    brushRow.append(brushLbl, brush);
+    terrain.append(terrRow, brushRow);
+    sidebar.append(terrain);
+
     // Strom
     sidebar.append(el("div", "panel-title", "Dlaždice a objekty"));
     this.treeEl = el("div", "tree");

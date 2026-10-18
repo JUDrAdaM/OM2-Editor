@@ -87,6 +87,14 @@ export class Viewport {
   private roadPath: string | null = null;
   private roadStart: { wx: number; wy: number } | null = null; // mapové světové souřadnice
   private lastRoad: { tileIndex: number; spline: MapSpline } | null = null;
+  /** Úprava terénu: směr (nahoru/dolů), poloměr a síla štětce; aktivní tah. */
+  private terrainDir: 1 | -1 = 1;
+  private brushRadius = 25;
+  private brushStrength = 1.2;
+  private terrainStroke = false;
+  private terrainTouched = new Set<number>(); // dlaždice změněné tahem (pro rebuild)
+  /** Terénní mesh podle indexu dlaždice (pro živou deformaci). */
+  private terrainMeshes = new Map<number, THREE.Mesh>();
 
   private modelCache: ModelCache | null = null;
   private loadedModels = new Map<string, LoadedModel | null>();
@@ -433,6 +441,7 @@ export class Viewport {
     this.objInstances.clear();
     this.splineObjects.clear();
     this.groundMeshes = [];
+    this.terrainMeshes.clear();
     this.selSplineLine = null;
     this.tileGroups = new Array(map.tiles.length);
 
@@ -517,6 +526,7 @@ export class Viewport {
       if (t.terrain) {
         const tm = this.buildTerrain(t);
         this.groundMeshes.push(tm);
+        this.terrainMeshes.set(ti, tm);
         group.add(tm);
       } else {
         const planeGeo = new THREE.PlaneGeometry(TILE_SIZE, TILE_SIZE);
@@ -944,6 +954,13 @@ export class Viewport {
       else this.onStatus?.("Klikni na terén.", true);
       return;
     }
+    if (this.tool === "terrain") {
+      this.terrainStroke = true;
+      this.controls.enabled = false;
+      const p = this.raycastGround();
+      if (p) this.applyTerrainBrush(p);
+      return;
+    }
 
     const objHit = this.pickObject();
     if (objHit) {
@@ -971,6 +988,13 @@ export class Viewport {
   };
 
   private onPointerMove = (e: PointerEvent) => {
+    if (this.terrainStroke && this.currentMap) {
+      this.updatePointer(e);
+      this.raycaster.setFromCamera(this.pointer, this.camera);
+      const p = this.raycastGround();
+      if (p) this.applyTerrainBrush(p);
+      return;
+    }
     if (!this.dragging || !this.selection || !this.currentMap) return;
     this.updatePointer(e);
     this.raycaster.setFromCamera(this.pointer, this.camera);
@@ -994,6 +1018,7 @@ export class Viewport {
   };
 
   private onPointerUp = () => {
+    if (this.terrainStroke) { this.endTerrainStroke(); return; }
     if (!this.dragging) return;
     const moved = this.dragMoved;
     const sel = this.selection;
@@ -1125,6 +1150,8 @@ export class Viewport {
   clearTools() {
     this.tool = null; this.roadPath = null; this.roadStart = null; this.lastRoad = null;
     this.placePath = null;
+    if (this.terrainStroke) this.endTerrainStroke();
+    this.terrainStroke = false;
     this.renderer.domElement.style.cursor = "";
   }
 
@@ -1161,6 +1188,80 @@ export class Viewport {
     this.roadStart = { wx, wy }; // navazuj z konce
     this.onChange?.(null); // obnov statistiky + tlačítko Uložit
     this.onStatus?.(`Segment přidán (délka ${length.toFixed(1)} m). Klikni další konec, nebo Esc.`);
+  }
+
+  // ---------- Nástroj: Úprava terénu ----------
+
+  /** Zapne úpravu terénu: dir = 1 (zvýšit) / −1 (snížit), null = vypnout. */
+  setTerrainMode(dir: 1 | -1 | null) {
+    this.placePath = null; this.roadPath = null; this.roadStart = null; this.lastRoad = null;
+    this.tool = dir ? "terrain" : null;
+    if (dir) this.terrainDir = dir;
+    this.renderer.domElement.style.cursor = dir ? "crosshair" : "";
+    this.onStatus?.(dir
+      ? `Úprava terénu (${dir > 0 ? "zvýšit" : "snížit"}, štětec ${this.brushRadius} m): táhni po terénu. Esc ukončí.`
+      : "Úprava terénu ukončena.");
+  }
+  setBrush(radius?: number, strength?: number) {
+    if (radius != null && radius > 0) this.brushRadius = radius;
+    if (strength != null && strength > 0) this.brushStrength = strength;
+  }
+
+  /** Aplikuje štětec výšky v bodě (world) na všechny dotčené dlaždice s terénem. */
+  private applyTerrainBrush(p: THREE.Vector3) {
+    if (!this.currentMap) return;
+    const wx = p.x, wy = -p.z;
+    const r = this.brushRadius, r2 = r * r;
+    const amt = this.terrainDir * this.brushStrength;
+    for (let ti = 0; ti < this.currentMap.tiles.length; ti++) {
+      const t = this.currentMap.tiles[ti];
+      if (!t.terrain) continue;
+      const ox = t.tileX * TILE_SIZE, oy = t.tileY * TILE_SIZE;
+      if (wx + r < ox || wx - r > ox + TILE_SIZE || wy + r < oy || wy - r > oy + TILE_SIZE) continue;
+      const n = t.terrain.size, step = TILE_SIZE / (n - 1);
+      const heights = t.terrain.heights as Float32Array | number[];
+      let changed = false;
+      for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+        const dx = ox + i * step - wx, dy = oy + j * step - wy;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > r2) continue;
+        const d = Math.sqrt(d2);
+        const fall = 0.5 * (1 + Math.cos(Math.PI * d / r)); // 1 ve středu → 0 na okraji
+        heights[j * n + i] = (heights[j * n + i] as number) + amt * fall;
+        changed = true;
+      }
+      if (changed) { t.dirty = true; this.terrainTouched.add(ti); this.updateTerrainMesh(ti); }
+    }
+  }
+
+  /** Živě přepíše pozice + normály terénního meshe dlaždice z aktuálních výšek. */
+  private updateTerrainMesh(ti: number) {
+    if (!this.currentMap) return;
+    const t = this.currentMap.tiles[ti];
+    const mesh = this.terrainMeshes.get(ti);
+    if (!t.terrain || !mesh) return;
+    const n = t.terrain.size, step = TILE_SIZE / (n - 1);
+    const pos = mesh.geometry.attributes.position as THREE.BufferAttribute;
+    for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+      const idx = j * n + i;
+      const w = worldPos(t.tileX, t.tileY, i * step, j * step, t.terrain.heights[idx] as number);
+      pos.setXYZ(idx, w.x, w.y, w.z);
+    }
+    pos.needsUpdate = true;
+    mesh.geometry.computeVertexNormals();
+    mesh.geometry.computeBoundingSphere();
+  }
+
+  /** Konec tahu úpravy terénu: přestav scénu (objekty dosednou na nový terén). */
+  private endTerrainStroke() {
+    this.terrainStroke = false;
+    this.controls.enabled = true;
+    if (this.terrainTouched.size) {
+      this.terrainTouched.clear();
+      this.build();
+      this.onChange?.(null);
+      this.onStatus?.("Terén upraven. (Objekty dosedly na nový terén.)");
+    }
   }
 
   focusObject(tileIndex: number, objectIndex: number) {

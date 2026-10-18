@@ -330,6 +330,21 @@ ipcMain.handle("omsi:saveTiles", async (_e, rootPath, tiles) => {
   }
 });
 
+ipcMain.handle("omsi:saveTerrains", async (_e, rootPath, terrains) => {
+  try {
+    if (!rootPath) return { error: "Chybí cesta ke složce mapy." };
+    let saved = 0;
+    for (const t of terrains) {
+      const target = path.join(rootPath, t.fileName);
+      await fs.writeFile(target, Buffer.from(t.data));
+      saved++;
+    }
+    return { saved };
+  } catch (err) {
+    return { error: String((err && err.message) || err) };
+  }
+});
+
 ipcMain.handle("omsi:readAsset", async (_e, omsiRoot, relPath) => {
   try {
     if (!omsiRoot) return null;

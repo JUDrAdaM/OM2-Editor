@@ -1,5 +1,15 @@
 import { buildMap, parseGlobalCfg, serializeTile } from "../omsi/map";
-import type { OmsiMap } from "../omsi/types";
+import type { OmsiMap, TerrainData } from "../omsi/types";
+
+/** Serializuje výškmapu dlaždice do binárního *.terrain (int32 dílky + float32 výšky LE). */
+function serializeTerrain(t: TerrainData): Uint8Array {
+  const segments = t.size - 1;
+  const out = new Uint8Array(4 + t.size * t.size * 4);
+  const dv = new DataView(out.buffer);
+  dv.setInt32(0, segments, true);
+  for (let i = 0; i < t.size * t.size; i++) dv.setFloat32(4 + i * 4, t.heights[i] as number, true);
+  return out;
+}
 import type { AssetSource } from "../viewport/models";
 
 // Most do Electronu (viz electron/preload.cjs). V prohlížeči je undefined.
@@ -42,6 +52,10 @@ interface OmsiAPI {
   saveTiles: (
     rootPath: string,
     tiles: { fileName: string; content: string }[]
+  ) => Promise<{ error?: string; saved?: number }>;
+  saveTerrains?: (
+    rootPath: string,
+    terrains: { fileName: string; data: Uint8Array }[]
   ) => Promise<{ error?: string; saved?: number }>;
   readAsset?: (omsiRoot: string, relPath: string) => Promise<Uint8Array | null>;
   getVersion?: () => Promise<string>;
@@ -366,9 +380,18 @@ export async function saveMap(map: OmsiMap): Promise<number> {
     content: serializeTile(t),
   }));
 
+  // Terén dirty dlaždic (úprava výšky) – binární *.terrain vedle *.map.
+  const terrains = dirty
+    .filter((t) => t.terrain)
+    .map((t) => ({ fileName: t.fileName + ".terrain", data: serializeTerrain(t.terrain!) }));
+
   if (window.omsiAPI?.isElectron) {
     const res = await window.omsiAPI.saveTiles(map.rootPath, payload);
     if (res.error) throw new Error(res.error);
+    if (terrains.length && window.omsiAPI.saveTerrains) {
+      const tr = await window.omsiAPI.saveTerrains(map.rootPath, terrains);
+      if (tr.error) throw new Error(tr.error);
+    }
     dirty.forEach((t) => (t.dirty = false));
     return res.saved ?? dirty.length;
   }
@@ -378,6 +401,12 @@ export async function saveMap(map: OmsiMap): Promise<number> {
       const fh = await dirHandle.getFileHandle(p.fileName, { create: false });
       const w = await fh.createWritable();
       await w.write(new Blob([encodeOmsiUtf16(p.content) as BlobPart]));
+      await w.close();
+    }
+    for (const tr of terrains) {
+      const fh = await dirHandle.getFileHandle(tr.fileName, { create: false });
+      const w = await fh.createWritable();
+      await w.write(new Blob([tr.data as BlobPart]));
       await w.close();
     }
     dirty.forEach((t) => (t.dirty = false));
