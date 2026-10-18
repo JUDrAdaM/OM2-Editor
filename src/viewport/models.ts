@@ -24,6 +24,9 @@ export interface LoadedModel {
   absoluteHeight: boolean;
   /** Matice bodů [new_attachment] (pro děti [attachObj]) v three-prostoru rodiče. */
   attachments: THREE.Matrix4[];
+  /** Základní rozměr billboardu stromu (z [tree]); slouží k per-instance škálování
+   *  podle přepisu ve [object]. undef = objekt není strom. */
+  treeBase?: { height: number; ratio: number };
 }
 
 /**
@@ -364,7 +367,11 @@ export async function loadModel(src: AssetSource, scoPath: string): Promise<Load
       const part = await buildTree(src, scoDir, tree);
       if (part) parts.push(part);
     }
-    if (parts.length) return { parts, originRotY: 0, absoluteHeight: sco.absHeight, attachments: sco.attachments.map(attachmentMatrix) };
+    if (parts.length) {
+      const bt = sco.trees[0];
+      const treeBase = { height: bt.height || 14, ratio: bt.height > 0 ? bt.width / bt.height : 1 };
+      return { parts, originRotY: 0, absoluteHeight: sco.absHeight, attachments: sco.attachments.map(attachmentMatrix), treeBase };
+    }
   }
 
   // [crossing_heightdeformation]: hrubé výškové pole (mesh), kterým se „drapne"

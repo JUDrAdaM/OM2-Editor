@@ -667,6 +667,17 @@ export class Viewport {
     m.makeRotationY(THREE.MathUtils.degToRad(o.rotZ + originRotY));
     if (o.rotX) m.multiply(this._rTmp.makeRotationX(THREE.MathUtils.degToRad(o.rotX)));
     if (o.rotY) m.multiply(this._rTmp.makeRotationZ(THREE.MathUtils.degToRad(-o.rotY)));
+    // Per-instance velikost stromu (přirozený les): škáluj billboard podle přepisu
+    // výšky/poměru proti základnímu rozměru ze .sco. Jen stromy s přepisem.
+    if (o.treeHeight) {
+      const base = this.loadedModels.get(o.path)?.treeBase;
+      if (base && base.height > 0) {
+        const sy = o.treeHeight / base.height;
+        const or = o.treeRatio && o.treeRatio > 0 ? o.treeRatio : base.ratio;
+        const sxz = base.ratio > 0 ? (o.treeHeight * or) / (base.height * base.ratio) : sy;
+        m.multiply(this._rTmp.makeScale(sxz, sy, sxz));
+      }
+    }
     m.setPosition(worldPos(t.tileX, t.tileY, o.x, o.y, baseY));
   }
 

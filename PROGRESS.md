@@ -2,6 +2,30 @@
 
 See `AUDIT.md` for the full defect list and root-cause evidence.
 
+## Session 2026-10-18 (per-instance tree size — natural forests)
+
+Trees (≈33% of Berlin's objects) were all rendered at their `.sco`'s average
+`[tree]` size, so a stand of one tree model looked like identical clones. OMSI
+gives each tree instance its own size via a per-`[object]` override
+(`texture, height, ratio` after the rotations); measured range on Berlin is a
+real **5–28 m** (median 14).
+
+- Parse the override (`map.ts parseTreeOverride`: the count field at
+  `pathIndex+8` then its lines; two numeric values = height + ratio; texture-only
+  repaints yield none) → `MapObject.treeHeight/treeRatio`.
+- `LoadedModel.treeBase` exposes the `.sco`'s base billboard height/ratio
+  (`models.ts`). `setObjMatrix` scales a tree instance by `override/base`
+  (height on Y, width = height·ratio on X/Z), reusing the temp matrix — no
+  allocation, and gated to tree objects only so nothing else is touched.
+- **Verified in-browser:** Grundorf and Berlin forests now show a natural mix of
+  tree heights (no clones, no grotesque extremes); buildings unchanged, 53 FPS
+  on 25 Berlin tiles, no JS errors. Parse checked on real data (1037 trees, 0
+  bad). Build clean.
+- Not done yet: the per-instance **texture** override (species variety) — needs
+  regrouping tree instances by texture; size was the bigger visual win.
+
+---
+
 ## Session 2026-10-18 (arrow-key nudge)
 
 Fine positioning for the selected object/spline: **arrow keys** move it in

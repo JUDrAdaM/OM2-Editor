@@ -53,10 +53,31 @@ function findPathLine(values: string[], ext: string): number {
   return -1;
 }
 
+/**
+ * Přepis [object] za rotacemi: pole `count` (pathIndex+8) a `count` řádků. U
+ * stromů je přepis `textura, výška, poměr` (každý billboard má vlastní velikost
+ * i texturu). Vytáhneme 2 číselné hodnoty = výška + poměr (texturu zatím ne).
+ * U běžných repaintů jsou přepisy jen názvy textur (žádná čísla) → vrátí null.
+ */
+function parseTreeOverride(v: string[], pathIndex: number): { height: number; ratio: number } | null {
+  const count = parseInt((v[pathIndex + 8] ?? "0").trim(), 10);
+  if (!Number.isFinite(count) || count <= 0) return null;
+  const nums: number[] = [];
+  for (let k = 1; k <= count && pathIndex + 8 + k < v.length; k++) {
+    const t = (v[pathIndex + 8 + k] ?? "").trim();
+    if (!t) continue;
+    const n = parseFloat(t.replace(",", "."));
+    if (Number.isFinite(n) && !Number.isNaN(Number(t.replace(",", ".")))) nums.push(n);
+  }
+  if (nums.length >= 2 && nums[0] > 0) return { height: nums[0], ratio: nums[1] > 0 ? nums[1] : 1 };
+  return null;
+}
+
 function deriveObject(section: OmsiSection, sectionIndex: number): MapObject | null {
   const pathIndex = findPathLine(section.values, ".sco");
   if (pathIndex < 0) return null;
   const v = section.values;
+  const treeOv = parseTreeOverride(v, pathIndex);
   return {
     id: toInt(v[pathIndex + OBJ.id]),
     path: v[pathIndex].trim(),
@@ -66,6 +87,8 @@ function deriveObject(section: OmsiSection, sectionIndex: number): MapObject | n
     rotZ: num(v[pathIndex + OBJ.rotZ]),
     rotX: num(v[pathIndex + OBJ.rotX]),
     rotY: num(v[pathIndex + OBJ.rotY]),
+    treeHeight: treeOv?.height,
+    treeRatio: treeOv?.ratio,
     sectionIndex,
     pathIndex,
   };

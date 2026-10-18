@@ -39,6 +39,11 @@ export interface MapObject {
   rotX: number;
   rotY: number;
   rotZ: number;
+  /** Per-instance výška stromu (metry) z přepisu v [object] – stromy se stejným
+   *  .sco mají různou velikost (přirozený les). undef = použít výchozí ze .sco. */
+  treeHeight?: number;
+  /** Per-instance poměr šířka/výška billboardu stromu (z téhož přepisu). */
+  treeRatio?: number;
   /** Index sekce v `tile.sections`, odkud objekt pochází. */
   sectionIndex: number;
   /** Index řádku s cestou v rámci `section.values`. */
