@@ -21,6 +21,8 @@ contextBridge.exposeInMainWorld("omsiAPI", {
   saveTiles: (rootPath, tiles) => ipcRenderer.invoke("omsi:saveTiles", rootPath, tiles),
   saveTerrains: (rootPath, terrains) => ipcRenderer.invoke("omsi:saveTerrains", rootPath, terrains),
   readAsset: (omsiRoot, relPath) => ipcRenderer.invoke("omsi:readAsset", omsiRoot, relPath),
+  /** Otevře dialog pro výběr souboru(ů) assetu; vrací cesty relativní ke kořeni OMSI. */
+  pickAsset: (omsiRoot, kind) => ipcRenderer.invoke("omsi:pickAsset", omsiRoot, kind),
 
   // --- Verze + autoupdate ---
   getVersion: () => ipcRenderer.invoke("app:getVersion"),

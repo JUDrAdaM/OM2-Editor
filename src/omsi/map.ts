@@ -489,6 +489,38 @@ export function createObject(
   return tile.objects.find((o) => o.id === newId) ?? tile.objects[tile.objects.length - 1];
 }
 
+/**
+ * Nastaví výšku/poměr stromového přepisu ve [object] (per-instance velikost –
+ * jediné „měřítko", které OMSI u objektů ukládá). Přepíše první dvě číselné
+ * hodnoty v override bloku (count na pathIndex+8, pak count řádků). Vrací true,
+ * když blok existuje a má ≥2 čísla; jinak false (běžný objekt / repaint bez čísel).
+ */
+export function setTreeOverride(
+  tile: MapTile,
+  obj: MapObject,
+  height: number,
+  ratio: number
+): boolean {
+  const section = tile.sections[obj.sectionIndex];
+  const v = section.values;
+  const pi = obj.pathIndex;
+  const count = parseInt((v[pi + 8] ?? "0").trim(), 10);
+  if (!Number.isFinite(count) || count <= 0) return false;
+  const numIdx: number[] = [];
+  for (let k = 1; k <= count && pi + 8 + k < v.length; k++) {
+    const t = (v[pi + 8 + k] ?? "").trim();
+    if (t && !Number.isNaN(Number(t.replace(",", ".")))) numIdx.push(pi + 8 + k);
+    if (numIdx.length >= 2) break;
+  }
+  if (numIdx.length < 2) return false;
+  v[numIdx[0]] = fmt(height);
+  v[numIdx[1]] = fmt(ratio);
+  obj.treeHeight = height;
+  obj.treeRatio = ratio;
+  tile.dirty = true;
+  return true;
+}
+
 /** Všechny unikátní cesty .sli použité v mapě (pro paletu stavby silnic). */
 export function usedSplinePaths(map: OmsiMap): string[] {
   const set = new Set<string>();

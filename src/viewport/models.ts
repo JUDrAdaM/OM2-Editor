@@ -5,7 +5,7 @@ import { parseO3D } from "../omsi/o3d";
 import type { O3DMesh } from "../omsi/o3d";
 import { parseXMesh } from "../omsi/xmesh";
 import { parseSco } from "../omsi/sco";
-import type { AlphaMode, ScoMatl, ScoTree } from "../omsi/sco";
+import type { AlphaMode, ScoMatl, ScoMesh, ScoTree } from "../omsi/sco";
 
 // Zdroj souborů relativně ke kořeni OMSI (Electron IPC nebo dev fetch).
 export interface AssetSource {
@@ -382,16 +382,36 @@ export async function loadModel(src: AssetSource, scoPath: string): Promise<Load
     deformField = f?.mesh ?? null;
   }
 
-  for (const meshDef of sco.meshes) {
-    const loaded = await loadMesh(src, scoDir, meshDef.file);
-    if (!loaded) continue;
-    if (deformField) applyCrossingDeform(loaded.mesh, deformField);
-    const origin: [number, number, number] = loaded.space === "o3d" ? meshDef.originTrans : [0, 0, 0];
-    const rotY = loaded.space === "o3d" ? meshDef.originRotY : 0;
-    const materials = await buildMaterials(src, scoDir, loaded.mesh, meshDef.matls);
-    const geometry = buildGeometry(loaded.mesh, origin, rotY, loaded.space);
-    const material = materials.length === 1 ? materials[0] : materials;
-    parts.push({ geometry, material });
+  // Výběr LOD skupiny: OMSI [LOD] = min. velikost objektu na obrazovce pro daný
+  // mesh. Plný .o3d má typicky 0.1–0.3, zjednodušený „_LOD" bývá 0 → vyšší
+  // hodnota = vyšší detail. Editor chce nejvyšší detail, tak bereme nejvyšší LOD
+  // skupinu. Některé objekty (železniční návěstidla Sv_ESig_*) mají ale „_LOD"
+  // mesh s VYŠŠÍ hodnotou (1) než plný (0.1) a soubor na disku chybí → dřív se
+  // vybral neexistující mesh a objekt spadl na „box". Proto: když se u zvolené
+  // skupiny nenačte žádný mesh, spadneme na další nižší LOD skupinu.
+  const byLod = new Map<number, ScoMesh[]>();
+  for (const m of sco.meshes) {
+    let g = byLod.get(m.lod);
+    if (!g) { g = []; byLod.set(m.lod, g); }
+    g.push(m);
+  }
+  const lodsDesc = [...byLod.keys()].sort((a, b) => b - a);
+  for (const lod of lodsDesc) {
+    const group = byLod.get(lod)!;
+    const groupParts: ModelPart[] = [];
+    for (const meshDef of group) {
+      const loaded = await loadMesh(src, scoDir, meshDef.file);
+      if (!loaded) continue;
+      if (deformField) applyCrossingDeform(loaded.mesh, deformField);
+      const origin: [number, number, number] = loaded.space === "o3d" ? meshDef.originTrans : [0, 0, 0];
+      const rotY = loaded.space === "o3d" ? meshDef.originRotY : 0;
+      const materials = await buildMaterials(src, scoDir, loaded.mesh, meshDef.matls);
+      const geometry = buildGeometry(loaded.mesh, origin, rotY, loaded.space);
+      const material = materials.length === 1 ? materials[0] : materials;
+      groupParts.push({ geometry, material });
+    }
+    // Použij první (nejvyšší) LOD skupinu, která se reálně načetla.
+    if (groupParts.length) { parts.push(...groupParts); break; }
   }
 
   return parts.length ? { parts, originRotY: 0, absoluteHeight: sco.absHeight, attachments: sco.attachments.map(attachmentMatrix) } : null;

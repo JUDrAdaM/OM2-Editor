@@ -357,6 +357,38 @@ ipcMain.handle("omsi:readAsset", async (_e, omsiRoot, relPath) => {
   }
 });
 
+ipcMain.handle("omsi:pickAsset", async (_e, omsiRoot, kind) => {
+  try {
+    const root = (omsiRoot || detectOmsiRoot());
+    if (!root) return { error: "OMSI 2 nenalezeno." };
+    const spec = {
+      object: { sub: "Sceneryobjects", filters: [{ name: "OMSI objekty (.sco)", extensions: ["sco"] }] },
+      spline: { sub: "Splines", filters: [{ name: "OMSI splajny (.sli)", extensions: ["sli"] }] },
+      texture: { sub: "Texture", filters: [{ name: "Textury", extensions: ["dds", "tga", "bmp", "png", "jpg", "jpeg"] }] },
+    }[kind] || { sub: "", filters: [{ name: "Vše", extensions: ["*"] }] };
+    let defaultPath = path.join(root, spec.sub);
+    if (!fssync.existsSync(defaultPath)) defaultPath = root;
+    const result = await dialog.showOpenDialog(win, {
+      title: "Vyber soubor(y) z instalace OMSI 2",
+      defaultPath,
+      properties: ["openFile", "multiSelections"],
+      filters: [...spec.filters, { name: "Všechny soubory", extensions: ["*"] }],
+    });
+    if (result.canceled || result.filePaths.length === 0) return { canceled: true };
+    const rootResolved = path.resolve(root);
+    const rels = [];
+    for (const fp of result.filePaths) {
+      const rel = path.relative(rootResolved, path.resolve(fp));
+      if (rel.startsWith("..") || path.isAbsolute(rel)) continue; // mimo kořen OMSI
+      rels.push(rel.replace(/\//g, "\\")); // OMSI používá zpětná lomítka
+    }
+    if (rels.length === 0) return { error: "Soubor musí být uvnitř složky OMSI 2." };
+    return { rels };
+  } catch (err) {
+    return { error: String((err && err.message) || err) };
+  }
+});
+
 ipcMain.handle("app:getVersion", async () => app.getVersion());
 
 // ---------------------------------------------------------------------------

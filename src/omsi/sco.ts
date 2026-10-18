@@ -150,12 +150,9 @@ export function parseSco(text: string): ScoInfo {
     }
   }
 
-  if (all.length === 0) return { meshes: [], trees, absHeight, attachments, crossingDeform };
-
-  // Vyber nejvyšší detail: skupina meshů s nejvyšší LOD hodnotou.
-  // (Bez [LOD] mají všechny Infinity → vezmou se všechny.)
-  let maxLod = -Infinity;
-  for (const m of all) if (m.lod > maxLod) maxLod = m.lod;
-  const meshes = all.filter((m) => m.lod === maxLod);
-  return { meshes, trees, absHeight, attachments, crossingDeform };
+  // Vracíme VŠECHNY meshe (s jejich LOD hodnotou). Výběr LOD skupiny dělá
+  // loadModel, protože potřebuje vědět, které soubory se reálně načetly:
+  // bere nejvyšší LOD (nejvyšší detail), a když její soubory chybí na disku,
+  // spadne na nižší – jinak by objekt s chybějícím mesh souborem byl jen box.
+  return { meshes: all, trees, absHeight, attachments, crossingDeform };
 }

@@ -1,11 +1,12 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { TransformControls } from "three/addons/controls/TransformControls.js";
 import { TILE_SIZE } from "../omsi/types";
 import type { OmsiMap, MapObject, MapSpline, MapTile, SplineAttachment, AttachObject, OmsiSection } from "../omsi/types";
 import {
   setObjectField, setSplineField, deleteObject, deleteSpline,
   duplicateObject, createObject, findTemplateObject, maxId, deriveTile,
-  createSpline, findTemplateSpline, setSplineNext,
+  createSpline, findTemplateSpline, setSplineNext, setTreeOverride,
 } from "../omsi/map";
 import { terrainHeightAt } from "../omsi/terrain";
 import { ModelCache, decodeTexture, tryReadNamed, textureCandidates, dirOf } from "./models";
@@ -25,6 +26,8 @@ export interface ObjectSelection { kind: "object"; tileIndex: number; objectInde
 export interface SplineSelection { kind: "spline"; tileIndex: number; splineIndex: number; spline: MapSpline; }
 export type Selection = ObjectSelection | SplineSelection;
 export type ObjField = "x" | "y" | "z" | "rotZ" | "rotX" | "rotY";
+export type GizmoMode = "translate" | "rotate" | "scale";
+export type ToolId = "select" | "object" | "road" | "terrain" | "paint" | "erase";
 export type SplField = "x" | "y" | "z" | "rotZ" | "length" | "radius" | "gradientStart" | "gradientEnd";
 
 const SPLINE_COLOR = 0xffb454;
@@ -45,6 +48,14 @@ export class Viewport {
   private readonly controls: OrbitControls;
   private readonly raycaster = new THREE.Raycaster();
   private readonly pointer = new THREE.Vector2();
+
+  // Transformační gizmo (manipulátor jako v Unreal / Roblox): posun XYZ, rotace,
+  // měřítko (měřítko jen u stromů – OMSI jinde velikost objektu neukládá).
+  private gizmo!: TransformControls;
+  private readonly gizmoProxy = new THREE.Object3D();
+  private gizmoMode: GizmoMode = "translate";
+  /** Oznámí UI změnu režimu gizma (panel tlačítek je v horní liště appky). */
+  onGizmoMode?: (mode: GizmoMode) => void;
 
   /** Jedna skupina na dlaždici (terén + objekty + attachmenty + splajny) → cullování. */
   private worldGroup = new THREE.Group();
@@ -71,6 +82,10 @@ export class Viewport {
 
   private dragging: "object" | "spline" | null = null;
   private dragMoved = false;
+  /** Pozice stisku (px) – tažení se počítá až po překročení prahu (brání tomu,
+   *  aby pouhý klik mikro-posunem označil dlaždici jako změněnou). */
+  private dragStartScreen: { x: number; y: number } | null = null;
+  private static readonly DRAG_THRESHOLD_PX = 3;
 
   // Historie úprav (undo/redo): snapshot sekcí dotčené dlaždice před/po editaci.
   // Sekce jsou zdroj pravdy, takže obnovení + deriveTile + build vrátí přesný stav.
@@ -82,13 +97,20 @@ export class Viewport {
   private readonly dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private placePath: string | null = null;
   /** Aktivní nástroj (null = výběr). */
-  private tool: "road" | "terrain" | "paint" | null = null;
+  private tool: "road" | "terrain" | "paint" | "erase" | null = null;
   /** Stavba silnic: zvolený .sli profil, počáteční bod a poslední vytvořený segment. */
   private roadPath: string | null = null;
   private roadStart: { wx: number; wy: number } | null = null; // mapové světové souřadnice
   private lastRoad: { tileIndex: number; spline: MapSpline } | null = null;
-  /** Úprava terénu: směr (nahoru/dolů), poloměr a síla štětce; aktivní tah. */
-  private terrainDir: 1 | -1 = 1;
+  /** Heading (°), na který musí navázat další segment (tečna na konci předchozího).
+   *  null = další segment je první → rovný ve směru kliknutí. Díky tomu silnice
+   *  plynule zatáčí: každý další úsek je kruhový oblouk tečný na předchozí. */
+  private roadHeading: number | null = null;
+  /** Úprava terénu: operace, poloměr a síla štětce; aktivní tah. */
+  private terrainOp: "raise" | "lower" | "flatten" | "smooth" = "raise";
+  /** Cílová výška pro „vyrovnat" (sejme se na začátku tahu). */
+  private flattenTarget = 0;
+  private flattenSampled = false;
   private brushRadius = 25;
   private brushStrength = 1.2;
   private terrainStroke = false;
@@ -127,6 +149,19 @@ export class Viewport {
   onSelect: ((sel: Selection | null) => void) | null = null;
   onChange: ((sel: Selection | null) => void) | null = null;
   onStatus: ((msg: string, error?: boolean) => void) | null = null;
+  /** Oznámí UI změnu aktivního nástroje (pro zvýraznění v panelu). */
+  onTool: ((tool: ToolId) => void) | null = null;
+
+  /** Aktuální nástroj pro UI (odvozený ze stavu). */
+  activeTool(): ToolId {
+    if (this.placePath) return "object";
+    if (this.tool === "road") return "road";
+    if (this.tool === "terrain") return "terrain";
+    if (this.tool === "paint") return "paint";
+    if (this.tool === "erase") return "erase";
+    return "select";
+  }
+  private emitTool() { this.onTool?.(this.activeTool()); }
 
   constructor(private readonly container: HTMLElement) {
     const { clientWidth: w, clientHeight: h } = container;
@@ -179,11 +214,171 @@ export class Viewport {
     this.highlight.renderOrder = 2;
     this.scene.add(this.highlight);
 
+    // Transformační gizmo – manipulátor na vybraném prvku (osy posunu / prstence
+    // rotace / krychličky měřítka). Kreslí se přímo ve scéně (ne ve worldGroup →
+    // nepodléhá cullingu ani disposu). Proxy objekt nese transformaci; po změně se
+    // přepíše zpět do polí objektu/splajnu (zdroj pravdy = sekce .map).
+    this.scene.add(this.gizmoProxy);
+    this.gizmo = new TransformControls(this.camera, this.renderer.domElement);
+    this.gizmo.setSpace("world");
+    this.gizmo.setSize(0.85);
+    this.gizmo.enabled = false;
+    this.gizmo.addEventListener("dragging-changed", (e) => this.onGizmoDragChanged(e.value as boolean));
+    this.gizmo.addEventListener("objectChange", () => this.applyGizmo());
+    const gh = this.gizmo as unknown as { getHelper?: () => THREE.Object3D };
+    this.scene.add(gh.getHelper ? gh.getHelper() : (this.gizmo as unknown as THREE.Object3D));
+
     this.renderer.domElement.addEventListener("pointerdown", this.onPointerDown, true);
     window.addEventListener("pointermove", this.onPointerMove);
     window.addEventListener("pointerup", this.onPointerUp);
     window.addEventListener("resize", this.onResize);
     this.animate();
+  }
+
+  // ---------- Transformační gizmo ----------
+
+  getGizmoMode(): GizmoMode { return this.gizmoMode; }
+
+  /** Přepne režim gizma. Měřítko je dostupné jen u stromů (OMSI jinde neukládá). */
+  setGizmoMode(mode: GizmoMode) {
+    if (mode === "scale") {
+      if (this.selection?.kind === "spline") {
+        this.onStatus?.("Spline nelze škálovat – uprav Délku/Poloměr v inspektoru.", true);
+        return;
+      }
+      if (this.selection?.kind === "object" && !this.loadedModels.get(this.selection.object.path)?.treeBase) {
+        this.onStatus?.("Měřítko: OMSI ukládá velikost jen u stromů. Použij posun/rotaci.", true);
+        return;
+      }
+    }
+    this.gizmoMode = mode;
+    this.gizmo.setMode(mode);
+    this.updateGizmoAxes();
+    this.onGizmoMode?.(mode);
+  }
+
+  /** Omez osy gizma: u splajnu v rotaci jen svislá (heading). */
+  private updateGizmoAxes() {
+    this.gizmo.showX = this.gizmo.showY = this.gizmo.showZ = true;
+    if (this.selection?.kind === "spline" && this.gizmoMode === "rotate") {
+      this.gizmo.showX = false;
+      this.gizmo.showZ = false;
+    }
+  }
+
+  /** Připne gizmo na vybraný prvek (pokud není aktivní jiný nástroj). */
+  private attachGizmo() {
+    if (!this.selection || this.tool || this.placePath) { this.detachGizmo(); return; }
+    // Měřítko dává smysl jen u stromů – jinak spadni na posun.
+    if (this.gizmoMode === "scale" &&
+        !(this.selection.kind === "object" && this.loadedModels.get(this.selection.object.path)?.treeBase)) {
+      this.gizmoMode = "translate";
+      this.onGizmoMode?.("translate");
+    }
+    this.syncGizmo();
+    this.gizmo.setMode(this.gizmoMode);
+    this.gizmo.enabled = true;
+    this.gizmo.attach(this.gizmoProxy);
+    this.updateGizmoAxes();
+  }
+  private detachGizmo() {
+    this.gizmo.detach();
+    this.gizmo.enabled = false;
+  }
+
+  /** Nastaví proxy gizma na světovou transformaci vybraného prvku. */
+  private syncGizmo() {
+    const sel = this.selection;
+    if (!sel || !this.currentMap) return;
+    const t = this.currentMap.tiles[sel.tileIndex];
+    const p = this.gizmoProxy;
+    if (sel.kind === "object") {
+      const o = sel.object;
+      p.position.copy(worldPos(t.tileX, t.tileY, o.x, o.y, this.objBaseY(t, o)));
+      // Pořadí YXZ odpovídá OMSI heading·pitch·bank (viz setObjMatrix).
+      p.rotation.set(
+        THREE.MathUtils.degToRad(o.rotX),
+        THREE.MathUtils.degToRad(o.rotZ),
+        THREE.MathUtils.degToRad(-o.rotY),
+        "YXZ"
+      );
+    } else {
+      const s = sel.spline;
+      p.position.copy(worldPos(t.tileX, t.tileY, s.x, s.y, s.z));
+      p.rotation.set(0, THREE.MathUtils.degToRad(s.rotZ), 0, "YXZ");
+    }
+    p.scale.set(1, 1, 1);
+    p.updateMatrixWorld();
+  }
+
+  private onGizmoDragChanged(dragging: boolean) {
+    this.controls.enabled = !dragging;
+    if (dragging) {
+      if (this.selection) this.beginEdit(this.selection.tileIndex);
+    } else {
+      const sel = this.selection;
+      this.commitEdit();
+      if (sel?.kind === "object") {
+        if (!this.updateObjectInstance(sel.tileIndex, sel.objectIndex)) this.build();
+      } else if (sel?.kind === "spline") {
+        this.updateSplineMesh(sel.tileIndex, sel.splineIndex);
+      }
+      this.restoreSelectionVisual();
+      this.onChange?.(this.selection);
+    }
+  }
+
+  /** Zapíše aktuální transformaci proxy zpět do polí vybraného prvku (živě). */
+  private applyGizmo() {
+    const sel = this.selection;
+    if (!sel || !this.currentMap) return;
+    const t = this.currentMap.tiles[sel.tileIndex];
+    const p = this.gizmoProxy;
+    if (sel.kind === "object") {
+      const o = sel.object;
+      if (this.gizmoMode === "scale") {
+        const base = this.loadedModels.get(o.path)?.treeBase;
+        if (base && base.height > 0) {
+          const sy = Math.max(0.05, p.scale.y);
+          const newH = round3(base.height * sy);
+          const newR = o.treeRatio && o.treeRatio > 0 ? o.treeRatio : base.ratio;
+          setTreeOverride(t, o, newH, newR);
+          this.updateObjectInstance(sel.tileIndex, sel.objectIndex);
+          this.moveHighlightToObject(sel);
+          this.onChange?.(sel);
+        }
+        return;
+      }
+      const lx = round3(p.position.x - t.tileX * TILE_SIZE);
+      const ly = round3(-p.position.z - t.tileY * TILE_SIZE);
+      setObjectField(t, o, "x", lx);
+      setObjectField(t, o, "y", ly);
+      const terrainBase = this.isAbsolute(o.path) ? 0 : tileHeight(t, lx, ly);
+      setObjectField(t, o, "z", round3(p.position.y - terrainBase));
+      if (this.gizmoMode === "rotate") {
+        const e = p.rotation; // order YXZ
+        let rz = THREE.MathUtils.radToDeg(e.y) % 360; if (rz < 0) rz += 360;
+        setObjectField(t, o, "rotZ", round3(rz));
+        setObjectField(t, o, "rotX", round3(THREE.MathUtils.radToDeg(e.x)));
+        setObjectField(t, o, "rotY", round3(-THREE.MathUtils.radToDeg(e.z)));
+      }
+      this.updateObjectInstance(sel.tileIndex, sel.objectIndex);
+      this.moveHighlightToObject(sel);
+    } else {
+      const s = sel.spline;
+      const lx = round3(p.position.x - t.tileX * TILE_SIZE);
+      const ly = round3(-p.position.z - t.tileY * TILE_SIZE);
+      setSplineField(t, s, "x", lx);
+      setSplineField(t, s, "y", ly);
+      setSplineField(t, s, "z", round3(p.position.y));
+      if (this.gizmoMode === "rotate") {
+        let rz = THREE.MathUtils.radToDeg(p.rotation.y) % 360; if (rz < 0) rz += 360;
+        setSplineField(t, s, "rotZ", round3(rz));
+      }
+      this.updateSplineMesh(sel.tileIndex, sel.splineIndex);
+      this.refreshSplineLine();
+    }
+    this.onChange?.(sel);
   }
 
   setAssetSource(src: AssetSource | null) {
@@ -951,6 +1146,9 @@ export class Viewport {
 
   private onPointerDown = (e: PointerEvent) => {
     if (e.button !== 0 || !this.currentMap) return;
+    // Klik na rukojeť gizma (hover/drag) obsluhuje TransformControls – neruš výběr
+    // ani nespouštěj tažení přes rovinu.
+    if (this.gizmo?.enabled && (this.gizmo.dragging || this.gizmo.axis)) return;
     this.updatePointer(e);
     this.raycaster.setFromCamera(this.pointer, this.camera);
 
@@ -967,9 +1165,20 @@ export class Viewport {
     }
     if (this.tool === "terrain") {
       this.terrainStroke = true;
+      this.flattenSampled = false;
       this.controls.enabled = false;
       const p = this.raycastGround();
       if (p) this.applyTerrainBrush(p);
+      return;
+    }
+    if (this.tool === "erase") {
+      const hit = this.pickObject();
+      if (hit) { this.eraseAt(hit.tileIndex, "object", hit.objectIndex); return; }
+      const sHits = this.raycaster.intersectObjects(this.visibleSplineObjects(), false);
+      if (sHits.length > 0) {
+        const { tileIndex, splineIndex } = sHits[0].object.userData as { tileIndex: number; splineIndex: number };
+        this.eraseAt(tileIndex, "spline", splineIndex);
+      } else this.onStatus?.("Guma: klikni přímo na objekt nebo spline.", true);
       return;
     }
     if (this.tool === "paint") {
@@ -986,6 +1195,7 @@ export class Viewport {
       this.selectObject(objHit.tileIndex, objHit.objectIndex, object);
       const t = this.currentMap.tiles[objHit.tileIndex];
       this.dragging = "object"; this.dragMoved = false; this.controls.enabled = false;
+      this.dragStartScreen = { x: e.clientX, y: e.clientY };
       this.beginEdit(objHit.tileIndex);
       this.dragPlane.constant = -(this.objBaseY(t, object) + OBJ_H);
       return;
@@ -997,6 +1207,7 @@ export class Viewport {
       const spline = this.currentMap.tiles[tileIndex].splines[splineIndex];
       this.selectSpline(tileIndex, splineIndex, spline);
       this.dragging = "spline"; this.dragMoved = false; this.controls.enabled = false;
+      this.dragStartScreen = { x: e.clientX, y: e.clientY };
       this.beginEdit(tileIndex);
       // Splajn se kreslí v absolutní výšce s.z (bez terénu) – rovina tažení taky.
       this.dragPlane.constant = -spline.z;
@@ -1014,6 +1225,12 @@ export class Viewport {
       return;
     }
     if (!this.dragging || !this.selection || !this.currentMap) return;
+    // Práh: dokud se kurzor neposune dost daleko, ber to jako klik (ne tažení) –
+    // jinak by i nepatrný pohyb při výběru označil dlaždici jako změněnou.
+    if (!this.dragMoved && this.dragStartScreen) {
+      const dpx = Math.hypot(e.clientX - this.dragStartScreen.x, e.clientY - this.dragStartScreen.y);
+      if (dpx < Viewport.DRAG_THRESHOLD_PX) return;
+    }
     this.updatePointer(e);
     this.raycaster.setFromCamera(this.pointer, this.camera);
     const hit = new THREE.Vector3();
@@ -1119,23 +1336,28 @@ export class Viewport {
   private restoreSelectionVisual() {
     if (this.selection?.kind === "object") this.moveHighlightToObject(this.selection);
     else if (this.selection?.kind === "spline") this.setOverlay(this.selection.tileIndex, this.selection.splineIndex);
+    // Po přestavbě / tažení dorovnej i proxy gizma, ať zůstane na prvku.
+    if (this.selection && this.gizmo?.enabled && !this.gizmo.dragging) this.syncGizmo();
   }
 
   private selectObject(tileIndex: number, objectIndex: number, object: MapObject) {
     this.removeOverlay();
     this.selection = { kind: "object", tileIndex, objectIndex, object };
     this.moveHighlightToObject(this.selection);
+    this.attachGizmo();
     this.onSelect?.(this.selection);
   }
   private selectSpline(tileIndex: number, splineIndex: number, spline: MapSpline) {
     this.highlight.visible = false;
     this.selection = { kind: "spline", tileIndex, splineIndex, spline };
     this.setOverlay(tileIndex, splineIndex);
+    this.attachGizmo();
     this.onSelect?.(this.selection);
   }
   private clearSelection(emit: boolean) {
     this.removeOverlay();
     this.highlight.visible = false; this.selection = null;
+    this.detachGizmo();
     if (emit) this.onSelect?.(null);
   }
 
@@ -1145,8 +1367,10 @@ export class Viewport {
   setPlaceMode(path: string | null) {
     if (path) this.clearTools();
     this.placePath = path;
+    if (path) this.detachGizmo(); else this.attachGizmo();
     this.renderer.domElement.style.cursor = path ? "crosshair" : "";
     this.onStatus?.(path ? `Umísťování: klikni na terén (${path.split("\\").pop()}). Esc zruší.` : "Umísťování zrušeno.");
+    this.emitTool();
   }
   isPlacing(): boolean { return this.placePath != null; }
 
@@ -1159,19 +1383,24 @@ export class Viewport {
     this.roadPath = path;
     this.roadStart = null;
     this.lastRoad = null;
+    this.roadHeading = null;
+    if (path) this.detachGizmo(); else this.attachGizmo();
     this.renderer.domElement.style.cursor = path ? "crosshair" : "";
     this.onStatus?.(path
       ? `Stavba silnic (${path.split("\\").pop()}): klikni začátek a pak konec segmentu. Esc ukončí.`
       : "Stavba silnic ukončena.");
+    this.emitTool();
   }
   isToolActive(): boolean { return this.tool != null || this.placePath != null; }
   /** Zruší všechny nástroje (výběr zůstává). */
   clearTools() {
-    this.tool = null; this.roadPath = null; this.roadStart = null; this.lastRoad = null;
+    this.tool = null; this.roadPath = null; this.roadStart = null; this.lastRoad = null; this.roadHeading = null;
     this.placePath = null;
     if (this.terrainStroke) this.endTerrainStroke();
     this.terrainStroke = false; this.paintStroke = false;
     this.renderer.domElement.style.cursor = "";
+    this.attachGizmo(); // obnov gizmo na vybraném prvku (pokud nějaký je)
+    this.emitTool();
   }
 
   /** Jedno kliknutí v režimu stavby silnic: 1. klik = začátek, 2. = konec segmentu. */
@@ -1180,14 +1409,52 @@ export class Viewport {
     const wx = p.x, wy = -p.z; // mapové světové souřadnice
     if (!this.roadStart) {
       this.roadStart = { wx, wy };
-      this.onStatus?.("Začátek nastaven – klikni konec segmentu.");
+      this.roadHeading = null; // nový řetězec začíná rovně
+      this.lastRoad = null;
+      this.onStatus?.("Začátek nastaven – klikni další bod. Silnice plynule zatáčí.");
       return;
     }
     const x0 = this.roadStart.wx, y0 = this.roadStart.wy;
     const dx = wx - x0, dy = wy - y0;
-    const length = Math.hypot(dx, dy);
-    if (length < 1) { this.onStatus?.("Segment je příliš krátký.", true); return; }
-    const heading = (THREE.MathUtils.radToDeg(Math.atan2(dx, dy)) + 360) % 360;
+    const chord = Math.hypot(dx, dy);
+    if (chord < 1) { this.onStatus?.("Segment je příliš krátký.", true); return; }
+
+    // Heading (°) tětivy ke kliknutému konci (stejná konvence jako splines.ts:
+    // směr = (sin h, cos h), h z atan2(dx,dy)).
+    const beta = Math.atan2(dx, dy);
+    let heading: number;   // azimut na začátku segmentu (°)
+    let radius: number;    // poloměr oblouku (0 = rovně); +R zatáčí doprava
+    let length: number;    // délka po ose (m)
+    let endHeading: number; // azimut tečny na konci (°) → start dalšího segmentu
+    if (this.roadHeading == null) {
+      // První segment: rovný ve směru kliknutí.
+      heading = beta;
+      radius = 0;
+      length = chord;
+      endHeading = beta;
+    } else {
+      const th0 = THREE.MathUtils.degToRad(this.roadHeading);
+      // Úhel mezi počáteční tečnou a tětivou, normalizovaný do (−π, π].
+      let alpha = beta - th0;
+      alpha = Math.atan2(Math.sin(alpha), Math.cos(alpha));
+      heading = this.roadHeading;
+      if (Math.abs(alpha) < 1e-3) {
+        radius = 0; length = chord; endHeading = this.roadHeading;
+      } else if (Math.abs(alpha) > 2.7) {
+        // Ostré otočení (klik skoro dozadu) → oblouk by byl degenerovaný; udělej
+        // rovný segment přímo k bodu (naruší plynulost, ale chová se očekávaně).
+        heading = beta; radius = 0; length = chord; endHeading = beta;
+      } else {
+        // Kruhový oblouk tečný na předchozí segment, procházející kliknutým bodem:
+        // tětiva c = 2R·sin α, délka oblouku L = c·α/sin α, otočení Δ = 2α.
+        radius = chord / (2 * Math.sin(alpha));
+        length = (chord * alpha) / Math.sin(alpha);
+        endHeading = THREE.MathUtils.radToDeg(th0 + 2 * alpha);
+      }
+    }
+    heading = ((heading % 360) + 360) % 360;
+    endHeading = ((endHeading % 360) + 360) % 360;
+
     const tileX = Math.floor(x0 / TILE_SIZE), tileY = Math.floor(y0 / TILE_SIZE);
     const tileIndex = this.currentMap.tiles.findIndex((t) => t.tileX === tileX && t.tileY === tileY);
     if (tileIndex < 0) { this.onStatus?.("Začátek není na dlaždici mapy.", true); return; }
@@ -1198,32 +1465,64 @@ export class Viewport {
     const prevId = this.lastRoad?.spline.id ?? 0;
     const template = findTemplateSpline(this.currentMap, this.roadPath) ?? undefined;
     this.beginEdit(tileIndex);
-    const sp = createSpline(t, this.roadPath, newId, lx, ly, z, round3(heading), round3(length), 0, prevId, 0, template);
+    const sp = createSpline(t, this.roadPath, newId, lx, ly, z, round3(heading), round3(length), round3(radius), prevId, 0, template);
     // Zřetězení: předchozí segment ukazuje na nový.
     if (this.lastRoad) setSplineNext(this.currentMap.tiles[this.lastRoad.tileIndex], this.lastRoad.spline, newId);
     this.build();
     this.commitEdit();
     this.lastRoad = { tileIndex, spline: sp };
-    this.roadStart = { wx, wy }; // navazuj z konce
-    this.onChange?.(null); // obnov statistiky + tlačítko Uložit
-    this.onStatus?.(`Segment přidán (délka ${length.toFixed(1)} m). Klikni další konec, nebo Esc.`);
+    this.roadStart = { wx, wy };      // navazuj z konce
+    this.roadHeading = endHeading;    // další segment začne tečně (→ plynulé zatáčky)
+    this.onChange?.(null);
+    const kind = radius === 0 ? "rovný" : `oblouk R=${Math.abs(radius).toFixed(0)} m`;
+    this.onStatus?.(`Segment přidán (${kind}, délka ${length.toFixed(1)} m). Klikni další bod, nebo Esc.`);
   }
 
   // ---------- Nástroj: Úprava terénu ----------
 
-  /** Zapne úpravu terénu: dir = 1 (zvýšit) / −1 (snížit), null = vypnout. */
-  setTerrainMode(dir: 1 | -1 | null) {
+  /** Zapne úpravu terénu danou operací (null = vypnout). */
+  setTerrainMode(op: "raise" | "lower" | "flatten" | "smooth" | null) {
     this.placePath = null; this.roadPath = null; this.roadStart = null; this.lastRoad = null;
-    this.tool = dir ? "terrain" : null;
-    if (dir) this.terrainDir = dir;
-    this.renderer.domElement.style.cursor = dir ? "crosshair" : "";
-    this.onStatus?.(dir
-      ? `Úprava terénu (${dir > 0 ? "zvýšit" : "snížit"}, štětec ${this.brushRadius} m): táhni po terénu. Esc ukončí.`
+    this.tool = op ? "terrain" : null;
+    if (op) this.terrainOp = op;
+    if (op) this.detachGizmo(); else this.attachGizmo();
+    this.renderer.domElement.style.cursor = op ? "crosshair" : "";
+    const label: Record<string, string> = { raise: "zvýšit", lower: "snížit", flatten: "vyrovnat", smooth: "vyhladit" };
+    this.onStatus?.(op
+      ? `Úprava terénu (${label[op]}, štětec ${this.brushRadius} m): táhni po terénu. Esc ukončí.`
       : "Úprava terénu ukončena.");
+    this.emitTool();
   }
   setBrush(radius?: number, strength?: number) {
     if (radius != null && radius > 0) this.brushRadius = radius;
     if (strength != null && strength > 0) this.brushStrength = strength;
+  }
+
+  // ---------- Nástroj: Guma (mazání klikem) ----------
+
+  /** Zapne/vypne gumu: klik na objekt/spline ho smaže. */
+  setEraseMode(on: boolean) {
+    this.placePath = null; this.roadPath = null; this.roadStart = null; this.lastRoad = null;
+    this.tool = on ? "erase" : null;
+    if (on) this.detachGizmo(); else this.attachGizmo();
+    this.renderer.domElement.style.cursor = on ? "crosshair" : "";
+    this.onStatus?.(on ? "Guma: klikni na objekt nebo spline a smažeš ho. Esc ukončí." : "Guma ukončena.");
+    this.emitTool();
+  }
+
+  /** Smaže prvek na daném indexu (jeden záznam historie). */
+  private eraseAt(tileIndex: number, kind: "object" | "spline", index: number) {
+    if (!this.currentMap) return;
+    const t = this.currentMap.tiles[tileIndex];
+    this.clearSelection(false);
+    this.beginEdit(tileIndex);
+    if (kind === "object") deleteObject(t, t.objects[index]);
+    else deleteSpline(t, t.splines[index]);
+    this.build();
+    this.commitEdit();
+    this.onSelect?.(null);
+    this.onChange?.(null);
+    this.onStatus?.("Smazáno.");
   }
 
   /** Aplikuje štětec výšky v bodě (world) na všechny dotčené dlaždice s terénem. */
@@ -1231,14 +1530,20 @@ export class Viewport {
     if (!this.currentMap) return;
     const wx = p.x, wy = -p.z;
     const r = this.brushRadius, r2 = r * r;
-    const amt = this.terrainDir * this.brushStrength;
+    const op = this.terrainOp;
+    // „Vyrovnat" sejme cílovou výšku z místa prvního kliknutí tahu.
+    if (op === "flatten" && !this.flattenSampled) { this.flattenTarget = p.y; this.flattenSampled = true; }
+    const amt = (op === "raise" ? 1 : -1) * this.brushStrength;
     for (let ti = 0; ti < this.currentMap.tiles.length; ti++) {
-      const t = this.currentMap.tiles[ti];
+      const t: MapTile = this.currentMap.tiles[ti];
       if (!t.terrain) continue;
       const ox = t.tileX * TILE_SIZE, oy = t.tileY * TILE_SIZE;
       if (wx + r < ox || wx - r > ox + TILE_SIZE || wy + r < oy || wy - r > oy + TILE_SIZE) continue;
-      const n = t.terrain.size, step = TILE_SIZE / (n - 1);
+      const n: number = t.terrain.size;
+      const step = TILE_SIZE / (n - 1);
       const heights = t.terrain.heights as Float32Array | number[];
+      // U vyhlazení čti ze snímku (jinak by směr průchodu zkresloval průměr).
+      const snap = op === "smooth" ? Float32Array.from(heights as number[]) : null;
       let changed = false;
       for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
         const dx = ox + i * step - wx, dy = oy + j * step - wy;
@@ -1246,7 +1551,22 @@ export class Viewport {
         if (d2 > r2) continue;
         const d = Math.sqrt(d2);
         const fall = 0.5 * (1 + Math.cos(Math.PI * d / r)); // 1 ve středu → 0 na okraji
-        heights[j * n + i] = (heights[j * n + i] as number) + amt * fall;
+        const k = j * n + i;
+        const h = heights[k] as number;
+        if (op === "raise" || op === "lower") {
+          heights[k] = h + amt * fall;
+        } else if (op === "flatten") {
+          const f = Math.min(1, this.brushStrength * 0.2 * fall);
+          heights[k] = h + (this.flattenTarget - h) * f;
+        } else { // smooth
+          const s = snap!;
+          let sum = 0, cnt = 0;
+          if (i > 0) { sum += s[k - 1]; cnt++; }
+          if (i < n - 1) { sum += s[k + 1]; cnt++; }
+          if (j > 0) { sum += s[k - n]; cnt++; }
+          if (j < n - 1) { sum += s[k + n]; cnt++; }
+          if (cnt) { const avg = sum / cnt; const f = Math.min(1, this.brushStrength * 0.2 * fall); heights[k] = h + (avg - h) * f; }
+        }
         changed = true;
       }
       if (changed) { t.dirty = true; this.terrainTouched.add(ti); this.updateTerrainMesh(ti); }
@@ -1288,8 +1608,9 @@ export class Viewport {
   /** Zapne malování povrchu zvolenou detailní texturou (groundtex nebo cesta). */
   async setPaintMode(texPath: string | null) {
     this.placePath = null; this.roadPath = null; this.tool = texPath ? "paint" : null;
-   
+    if (texPath) this.detachGizmo(); else this.attachGizmo();
     this.renderer.domElement.style.cursor = texPath ? "crosshair" : "";
+    this.emitTool();
     if (!texPath) { this.onStatus?.("Malování povrchu ukončeno."); return; }
     // načti texturu (relativní ke kořeni OMSI – groundtex)
     this.paintTexture = null;

@@ -58,6 +58,10 @@ interface OmsiAPI {
     terrains: { fileName: string; data: Uint8Array }[]
   ) => Promise<{ error?: string; saved?: number }>;
   readAsset?: (omsiRoot: string, relPath: string) => Promise<Uint8Array | null>;
+  pickAsset?: (
+    omsiRoot: string | null,
+    kind: AssetKind
+  ) => Promise<{ rels?: string[]; canceled?: boolean; error?: string }>;
   getVersion?: () => Promise<string>;
   checkUpdate?: () => Promise<{ ok: boolean; message?: string }>;
   installUpdate?: () => Promise<{ ok: boolean }>;
@@ -337,6 +341,26 @@ function deriveOmsiRoot(rootPath: string): string | null {
   return m ? m[1] : null;
 }
 
+/** Kořen OMSI pro danou mapu (pro čtení/procházení assetů). */
+export function omsiRootOf(map: OmsiMap): string | null {
+  return deriveOmsiRoot(map.rootPath);
+}
+
+/** Druh assetu pro procházení (dialog filtruje přípony + výchozí podsložku). */
+export type AssetKind = "object" | "spline" | "texture";
+
+/**
+ * Nechá uživatele vybrat soubor(y) assetu z instalace OMSI (desktop). Vrací cesty
+ * RELATIVNÍ ke kořeni OMSI (zpětná lomítka), použitelné přímo v mapě. V prohlížeči
+ * (dev náhled) není nativní dialog k dispozici → prázdné pole.
+ */
+export async function pickAssetFiles(kind: AssetKind, omsiRoot: string | null): Promise<string[]> {
+  if (!window.omsiAPI?.pickAsset) return [];
+  const r = await window.omsiAPI.pickAsset(omsiRoot, kind);
+  if (r?.error) throw new Error(r.error);
+  return r?.rels ?? [];
+}
+
 /**
  * Vytvoří zdroj assetů (modely/textury) pro danou mapu:
  *  - Electron: nativní čtení z kořene OMSI (odvozeno z cesty mapy),
@@ -345,18 +369,18 @@ function deriveOmsiRoot(rootPath: string): string | null {
  */
 export function createAssetSource(map: OmsiMap): AssetSource | null {
   const omsiRoot = deriveOmsiRoot(map.rootPath);
+  let base: AssetSource | null = null;
   if (window.omsiAPI?.isElectron && window.omsiAPI.readAsset && omsiRoot) {
     const api = window.omsiAPI;
-    return {
+    base = {
       async readFile(rel: string) {
         const u8 = await api.readAsset!(omsiRoot, rel);
         if (!u8) return null;
         return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
       },
     };
-  }
-  if (import.meta.env.DEV) {
-    return {
+  } else if (import.meta.env.DEV) {
+    base = {
       async readFile(rel: string) {
         try {
           const res = await fetch("/omsi/" + rel.replace(/\\/g, "/"));
@@ -367,7 +391,21 @@ export function createAssetSource(map: OmsiMap): AssetSource | null {
       },
     };
   }
-  return null;
+  if (!base) return null;
+  // Negativní cache: cesty, které už vrátily null (chybějící soubory), se znovu
+  // nečtou. textureCandidates zkouší až 9 variant na objekt → jinak stovky
+  // opakovaných 404 v konzoli a zbytečné I/O u velkých map. Pozitivní výsledky
+  // necachujeme (ArrayBuffery jsou velké; modely/splajny mají vlastní cache).
+  const missing = new Set<string>();
+  const inner = base;
+  return {
+    async readFile(rel: string) {
+      if (missing.has(rel)) return null;
+      const buf = await inner.readFile(rel);
+      if (!buf) missing.add(rel);
+      return buf;
+    },
+  };
 }
 
 /** Uloží všechny „dirty" dlaždice zpět na disk. Vrátí počet uložených. */

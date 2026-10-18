@@ -29,7 +29,7 @@ body {
 
 .editor {
   display: grid;
-  grid-template-rows: 52px 1fr 28px;
+  grid-template-rows: 44px 1fr 28px;
   height: 100%;
 }
 
@@ -37,10 +37,31 @@ body {
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 0 14px;
+  gap: 8px;
+  padding: 0 12px;
   background: linear-gradient(180deg, #182030, #121820);
   border-bottom: 1px solid var(--border);
+}
+
+/* Gizmo přepínač v horní liště */
+.gizmo-group {
+  display: flex;
+  gap: 4px;
+  margin-left: 6px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
+
+.dirty-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  color: var(--accent-2);
+  background: rgba(255, 180, 84, 0.12);
+  border: 1px solid #5a4a2a;
+  border-radius: 999px;
+  padding: 3px 10px;
+  white-space: nowrap;
 }
 .brand { display: flex; align-items: center; gap: 8px; margin-right: 8px; }
 .brand-mark { color: var(--accent); font-size: 18px; }
@@ -112,6 +133,45 @@ body {
   color: var(--muted);
   border-bottom: 1px solid var(--border);
 }
+
+/* ---- Přepínač nástrojů (levý panel) ---- */
+.tool-rail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.tool-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  width: 58px;
+  padding: 7px 2px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.tool-btn:hover { background: #222c3b; color: var(--text); }
+.tool-btn.active { border-color: var(--accent); color: var(--text); background: #1b2a3e; }
+.tool-ico { font-size: 17px; line-height: 1; }
+.tool-lbl { font-size: 10px; }
+
+.tool-area { border-bottom: 1px solid var(--border); }
+.tool-panel { padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+.tool-head {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+}
+.btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.slider-row { display: flex; flex-direction: column; gap: 4px; }
+.slider-row input[type="range"] { width: 100%; accent-color: var(--accent); }
 
 .viewport { position: relative; min-width: 0; background: var(--bg); }
 .viewport canvas { display: block; }
