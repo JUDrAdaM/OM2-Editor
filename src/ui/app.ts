@@ -3,7 +3,7 @@ import type { Selection, ObjField, SplField } from "../viewport/viewport";
 import { openMapFolder, saveMap, createAssetSource, loadMapFromOmsiDev } from "../fs/loader";
 import { openSettings } from "./settings";
 import { createDemoMap } from "../omsi/demo";
-import { usedObjectPaths } from "../omsi/map";
+import { usedObjectPaths, usedSplinePaths } from "../omsi/map";
 import type { OmsiMap } from "../omsi/types";
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -35,6 +35,7 @@ export class EditorApp {
   private inspectorEl!: HTMLElement;
   private saveBtn!: HTMLButtonElement;
   private paletteListEl!: HTMLElement;
+  private roadListEl!: HTMLElement;
   private placeBanner!: HTMLElement;
   private filterEl!: HTMLInputElement;
 
@@ -85,6 +86,23 @@ export class EditorApp {
     this.placeBanner.style.display = "none";
     palette.append(addRow, filter, this.placeBanner, this.paletteListEl);
     sidebar.append(palette);
+
+    // Paleta silnic (stavba silnic z .sli profilů)
+    sidebar.append(el("div", "panel-title", "Stavba silnic"));
+    const roads = el("div", "palette");
+    const roadRow = el("div", "palette-add");
+    const roadInput = el("input", "edit-input") as HTMLInputElement;
+    roadInput.placeholder = "Splines\\…\\silnice.sli";
+    const roadBtn = el("button", "btn btn-sm", "Stavět");
+    roadBtn.addEventListener("click", () => {
+      const p = roadInput.value.trim();
+      if (p) this.viewport.setRoadMode(p);
+    });
+    roadRow.append(roadInput, roadBtn);
+    this.roadListEl = el("div", "palette-list");
+    roads.append(roadRow, this.roadListEl);
+    sidebar.append(roads);
+
     // Strom
     sidebar.append(el("div", "panel-title", "Dlaždice a objekty"));
     this.treeEl = el("div", "tree");
@@ -178,6 +196,7 @@ export class EditorApp {
     this.updateStats();
     this.renderTree(map);
     this.renderPalette("");
+    this.renderRoadPalette();
     this.renderInspector(null);
     this.updateSaveButton();
     this.setStatus(status);
@@ -204,6 +223,19 @@ export class EditorApp {
       this.paletteListEl.append(item);
     }
     if (paths.length === 0) this.paletteListEl.append(el("div", "hint", "Nic nenalezeno."));
+  }
+
+  private renderRoadPalette() {
+    this.roadListEl.innerHTML = "";
+    if (!this.map) return;
+    const paths = usedSplinePaths(this.map);
+    for (const p of paths.slice(0, 400)) {
+      const item = el("div", "palette-item", baseName(p));
+      item.title = p;
+      item.addEventListener("click", () => this.viewport.setRoadMode(p));
+      this.roadListEl.append(item);
+    }
+    if (paths.length === 0) this.roadListEl.append(el("div", "hint", "Žádné silnice v mapě."));
   }
 
   private updatePlaceBanner() {
@@ -414,7 +446,7 @@ export class EditorApp {
       return;
     }
     if (e.key === "Escape") {
-      if (this.viewport.isPlacing()) this.viewport.setPlaceMode(null);
+      if (this.viewport.isToolActive()) { this.viewport.clearTools(); this.setStatus("Nástroj ukončen."); }
       return;
     }
     if (inField) return;

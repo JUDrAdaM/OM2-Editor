@@ -5,6 +5,7 @@ import type { OmsiMap, MapObject, MapSpline, MapTile, SplineAttachment, AttachOb
 import {
   setObjectField, setSplineField, deleteObject, deleteSpline,
   duplicateObject, createObject, findTemplateObject, maxId, deriveTile,
+  createSpline, findTemplateSpline, setSplineNext,
 } from "../omsi/map";
 import { terrainHeightAt } from "../omsi/terrain";
 import { ModelCache, decodeTexture, tryReadNamed, textureCandidates, dirOf } from "./models";
@@ -80,6 +81,12 @@ export class Viewport {
   onHistory?: () => void;
   private readonly dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private placePath: string | null = null;
+  /** Aktivní nástroj (null = výběr). */
+  private tool: "road" | "terrain" | "paint" | null = null;
+  /** Stavba silnic: zvolený .sli profil, počáteční bod a poslední vytvořený segment. */
+  private roadPath: string | null = null;
+  private roadStart: { wx: number; wy: number } | null = null; // mapové světové souřadnice
+  private lastRoad: { tileIndex: number; spline: MapSpline } | null = null;
 
   private modelCache: ModelCache | null = null;
   private loadedModels = new Map<string, LoadedModel | null>();
@@ -931,6 +938,12 @@ export class Viewport {
       if (p) this.placeObjectAt(p);
       return;
     }
+    if (this.tool === "road") {
+      const p = this.raycastGround();
+      if (p) this.roadClick(p);
+      else this.onStatus?.("Klikni na terén.", true);
+      return;
+    }
 
     const objHit = this.pickObject();
     if (objHit) {
@@ -1086,11 +1099,69 @@ export class Viewport {
 
   getSelection(): Selection | null { return this.selection; }
   setPlaceMode(path: string | null) {
+    if (path) this.clearTools();
     this.placePath = path;
     this.renderer.domElement.style.cursor = path ? "crosshair" : "";
     this.onStatus?.(path ? `Umísťování: klikni na terén (${path.split("\\").pop()}). Esc zruší.` : "Umísťování zrušeno.");
   }
   isPlacing(): boolean { return this.placePath != null; }
+
+  // ---------- Nástroj: Stavba silnic ----------
+
+  /** Zapne/vypne stavbu silnic se zvoleným .sli profilem. */
+  setRoadMode(path: string | null) {
+    this.placePath = null;
+    this.tool = path ? "road" : null;
+    this.roadPath = path;
+    this.roadStart = null;
+    this.lastRoad = null;
+    this.renderer.domElement.style.cursor = path ? "crosshair" : "";
+    this.onStatus?.(path
+      ? `Stavba silnic (${path.split("\\").pop()}): klikni začátek a pak konec segmentu. Esc ukončí.`
+      : "Stavba silnic ukončena.");
+  }
+  isToolActive(): boolean { return this.tool != null || this.placePath != null; }
+  /** Zruší všechny nástroje (výběr zůstává). */
+  clearTools() {
+    this.tool = null; this.roadPath = null; this.roadStart = null; this.lastRoad = null;
+    this.placePath = null;
+    this.renderer.domElement.style.cursor = "";
+  }
+
+  /** Jedno kliknutí v režimu stavby silnic: 1. klik = začátek, 2. = konec segmentu. */
+  private roadClick(p: THREE.Vector3) {
+    if (!this.currentMap || !this.roadPath) return;
+    const wx = p.x, wy = -p.z; // mapové světové souřadnice
+    if (!this.roadStart) {
+      this.roadStart = { wx, wy };
+      this.onStatus?.("Začátek nastaven – klikni konec segmentu.");
+      return;
+    }
+    const x0 = this.roadStart.wx, y0 = this.roadStart.wy;
+    const dx = wx - x0, dy = wy - y0;
+    const length = Math.hypot(dx, dy);
+    if (length < 1) { this.onStatus?.("Segment je příliš krátký.", true); return; }
+    const heading = (THREE.MathUtils.radToDeg(Math.atan2(dx, dy)) + 360) % 360;
+    const tileX = Math.floor(x0 / TILE_SIZE), tileY = Math.floor(y0 / TILE_SIZE);
+    const tileIndex = this.currentMap.tiles.findIndex((t) => t.tileX === tileX && t.tileY === tileY);
+    if (tileIndex < 0) { this.onStatus?.("Začátek není na dlaždici mapy.", true); return; }
+    const t = this.currentMap.tiles[tileIndex];
+    const lx = round3(x0 - tileX * TILE_SIZE), ly = round3(y0 - tileY * TILE_SIZE);
+    const z = round3(tileHeight(t, lx, ly));
+    const newId = maxId(this.currentMap) + 1;
+    const prevId = this.lastRoad?.spline.id ?? 0;
+    const template = findTemplateSpline(this.currentMap, this.roadPath) ?? undefined;
+    this.beginEdit(tileIndex);
+    const sp = createSpline(t, this.roadPath, newId, lx, ly, z, round3(heading), round3(length), 0, prevId, 0, template);
+    // Zřetězení: předchozí segment ukazuje na nový.
+    if (this.lastRoad) setSplineNext(this.currentMap.tiles[this.lastRoad.tileIndex], this.lastRoad.spline, newId);
+    this.build();
+    this.commitEdit();
+    this.lastRoad = { tileIndex, spline: sp };
+    this.roadStart = { wx, wy }; // navazuj z konce
+    this.onChange?.(null); // obnov statistiky + tlačítko Uložit
+    this.onStatus?.(`Segment přidán (délka ${length.toFixed(1)} m). Klikni další konec, nebo Esc.`);
+  }
 
   focusObject(tileIndex: number, objectIndex: number) {
     if (!this.currentMap) return;

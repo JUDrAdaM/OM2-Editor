@@ -489,6 +489,75 @@ export function createObject(
   return tile.objects.find((o) => o.id === newId) ?? tile.objects[tile.objects.length - 1];
 }
 
+/** Všechny unikátní cesty .sli použité v mapě (pro paletu stavby silnic). */
+export function usedSplinePaths(map: OmsiMap): string[] {
+  const set = new Set<string>();
+  for (const t of map.tiles) for (const s of t.splines) if (s.path) set.add(s.path);
+  return [...set].sort((a, b) => a.localeCompare(b));
+}
+
+/** Najde libovolný spline s danou cestou (šablona pro nový spline – formát/cant). */
+export function findTemplateSpline(map: OmsiMap, path: string): OmsiSection | null {
+  const lp = path.toLowerCase();
+  for (const t of map.tiles) {
+    const sp = t.splines.find((s) => s.path.toLowerCase() === lp);
+    if (sp) return t.sections[sp.sectionIndex];
+  }
+  return null;
+}
+
+/**
+ * Vytvoří nový spline (segment silnice/koleje) na dlaždici. Když je k dispozici
+ * šablona (existující spline téže cesty), naklonuje její sekci (zachová formát),
+ * jinak vytvoří minimální [spline]. Vrátí nový MapSpline.
+ */
+export function createSpline(
+  tile: MapTile,
+  path: string,
+  newId: number,
+  x: number, y: number, z: number,
+  heading: number, length: number, radius: number,
+  prevId = 0, nextId = 0,
+  template?: OmsiSection
+): MapSpline {
+  let section: OmsiSection;
+  if (template) {
+    section = { name: template.name, values: [...template.values] };
+    const pi = findPathLine(section.values, ".sli");
+    const base = pi >= 0 ? pi : 1;
+    const set = (off: number, val: string) => {
+      while (section.values.length <= base + off) section.values.push("0");
+      section.values[base + off] = val;
+    };
+    set(0, path);
+    set(SPL.id, String(newId));
+    set(SPL.prevId, String(prevId));
+    set(SPL.nextId, String(nextId));
+    set(SPL.x, fmt(x)); set(SPL.z, fmt(z)); set(SPL.y, fmt(y));
+    set(SPL.rotZ, fmt(heading)); set(SPL.length, fmt(length)); set(SPL.radius, fmt(radius));
+  } else {
+    section = {
+      name: "spline",
+      values: ["0", path, String(newId), String(prevId), String(nextId),
+        fmt(x), fmt(z), fmt(y), fmt(heading), fmt(length), fmt(radius), "0", "0"],
+    };
+  }
+  tile.sections.push(section);
+  deriveTile(tile);
+  tile.dirty = true;
+  return tile.splines.find((s) => s.id === newId) ?? tile.splines[tile.splines.length - 1];
+}
+
+/** Nastaví nextId existujícího splajnu (pro řetězení nových segmentů). */
+export function setSplineNext(tile: MapTile, spline: MapSpline, nextId: number): void {
+  spline.nextId = nextId;
+  const section = tile.sections[spline.sectionIndex];
+  const idx = spline.pathIndex + SPL.nextId;
+  while (section.values.length <= idx) section.values.push("0");
+  section.values[idx] = String(nextId);
+  tile.dirty = true;
+}
+
 /** Duplikuje objekt (klon sekce) s novým ID a posunem; vrátí nový MapObject. */
 export function duplicateObject(
   tile: MapTile,
