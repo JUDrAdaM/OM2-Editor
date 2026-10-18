@@ -59,17 +59,19 @@ function findPathLine(values: string[], ext: string): number {
  * i texturu). Vytáhneme 2 číselné hodnoty = výška + poměr (texturu zatím ne).
  * U běžných repaintů jsou přepisy jen názvy textur (žádná čísla) → vrátí null.
  */
-function parseTreeOverride(v: string[], pathIndex: number): { height: number; ratio: number } | null {
+function parseTreeOverride(v: string[], pathIndex: number): { height: number; ratio: number; tex?: string } | null {
   const count = parseInt((v[pathIndex + 8] ?? "0").trim(), 10);
   if (!Number.isFinite(count) || count <= 0) return null;
   const nums: number[] = [];
+  let tex: string | undefined;
   for (let k = 1; k <= count && pathIndex + 8 + k < v.length; k++) {
     const t = (v[pathIndex + 8 + k] ?? "").trim();
     if (!t) continue;
     const n = parseFloat(t.replace(",", "."));
     if (Number.isFinite(n) && !Number.isNaN(Number(t.replace(",", ".")))) nums.push(n);
+    else if (!tex && /\.(dds|tga|bmp|png|jpg)$/i.test(t)) tex = t;
   }
-  if (nums.length >= 2 && nums[0] > 0) return { height: nums[0], ratio: nums[1] > 0 ? nums[1] : 1 };
+  if (nums.length >= 2 && nums[0] > 0) return { height: nums[0], ratio: nums[1] > 0 ? nums[1] : 1, tex };
   return null;
 }
 
@@ -89,6 +91,7 @@ function deriveObject(section: OmsiSection, sectionIndex: number): MapObject | n
     rotY: num(v[pathIndex + OBJ.rotY]),
     treeHeight: treeOv?.height,
     treeRatio: treeOv?.ratio,
+    treeTex: treeOv?.tex,
     sectionIndex,
     pathIndex,
   };

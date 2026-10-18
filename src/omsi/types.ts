@@ -44,6 +44,8 @@ export interface MapObject {
   treeHeight?: number;
   /** Per-instance poměr šířka/výška billboardu stromu (z téhož přepisu). */
   treeRatio?: number;
+  /** Per-instance textura stromu (druh) z téhož přepisu; relativní ke .sco složce. */
+  treeTex?: string;
   /** Index sekce v `tile.sections`, odkud objekt pochází. */
   sectionIndex: number;
   /** Index řádku s cestou v rámci `section.values`. */

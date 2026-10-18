@@ -21,8 +21,20 @@ real **5–28 m** (median 14).
   tree heights (no clones, no grotesque extremes); buildings unchanged, 53 FPS
   on 25 Berlin tiles, no JS errors. Parse checked on real data (1037 trees, 0
   bad). Build clean.
-- Not done yet: the per-instance **texture** override (species variety) — needs
-  regrouping tree instances by texture; size was the bigger visual win.
+
+### Follow-up: per-instance tree texture (species variety)
+The override also carries a **texture** (chestnut, birch…), so a stand that uses
+one tree `.sco` should still be a mix of species. Added:
+- `MapObject.treeTex` (parsed by `parseTreeOverride`); `viewport.loadTreeTextures`
+  loads each unique override texture (keyed `scoDir|texName`, via the bounded
+  pool) and caches a shared alpha-test material per texture.
+- `build()` now **sub-groups a tree path's instances by override texture** (a
+  no-op single group for non-trees, so nothing else changes), reusing the `.sco`
+  billboard geometry with the override material; size still comes from
+  `setObjMatrix`. Missing texture → the `.sco` default.
+- Verified: Grundorf & Berlin forests now vary in **species and size**; selection
+  still works (pickables rebuilt per sub-group), 66 FPS on 25 Berlin tiles, no
+  JS errors. Build clean.
 
 ---
 

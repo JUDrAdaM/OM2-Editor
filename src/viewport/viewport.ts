@@ -7,7 +7,7 @@ import {
   duplicateObject, createObject, findTemplateObject, maxId, deriveTile,
 } from "../omsi/map";
 import { terrainHeightAt } from "../omsi/terrain";
-import { ModelCache, decodeTexture } from "./models";
+import { ModelCache, decodeTexture, tryReadNamed, textureCandidates, dirOf } from "./models";
 import type { AssetSource, LoadedModel } from "./models";
 import { SplineCache, buildSplineMesh, splineCenterline, splineSampleAt } from "./splines";
 import type { LoadedSpline } from "./splines";
@@ -91,6 +91,11 @@ export class Viewport {
   /** Zapečené lightmapy terénu (`.map.LM.bmp`) podle fileName dlaždice. */
   private lightmaps = new Map<string, THREE.Texture>();
   private lmToken = 0;
+  /** Per-instance textury stromů (druh) podle klíče `scoDir|texName`. */
+  private treeTex = new Map<string, THREE.Texture>();
+  /** Materiály stromů podle textury (sdílené, nedisposují se). */
+  private treeMat = new Map<THREE.Texture, THREE.Material>();
+  private treeTexToken = 0;
 
   private splineCache: SplineCache | null = null;
   private loadedSplines = new Map<string, LoadedSpline | null>();
@@ -221,6 +226,63 @@ export class Viewport {
     if (token === this.lmToken && this.lightmaps.size) this.build();
   }
 
+  /**
+   * Načte per-instance textury stromů (druh) z přepisů [object]. Každý strom má
+   * vlastní texturu (kaštan, bříza…), takže les není jednodruhový. Textury se
+   * sdílejí přes cache (klíč `scoDir|texName`); materiály taktéž. Po načtení
+   * přestaví scénu. Chybějící textura → fallback na výchozí texturu modelu.
+   */
+  private async loadTreeTextures() {
+    const token = ++this.treeTexToken;
+    this.treeTex.clear();
+    for (const m of this.treeMat.values()) m.dispose();
+    this.treeMat.clear();
+    if (!this.assetSrc || !this.currentMap) return;
+    const want = new Map<string, { scoDir: string; texName: string }>();
+    for (const t of this.currentMap.tiles) {
+      for (const o of t.objects) {
+        if (!o.treeTex) continue;
+        const scoDir = dirOf(o.path);
+        const key = `${scoDir}|${o.treeTex.toLowerCase()}`;
+        if (!want.has(key)) want.set(key, { scoDir, texName: o.treeTex });
+      }
+    }
+    await runPool(
+      [...want.entries()], ASSET_CONCURRENCY,
+      async ([key, { scoDir, texName }]) => {
+        const found = await tryReadNamed(this.assetSrc!, textureCandidates(scoDir, texName));
+        if (!found || token !== this.treeTexToken) return;
+        const tex = decodeTexture(found.name, found.buf);
+        if (tex && token === this.treeTexToken) {
+          tex.colorSpace = THREE.SRGBColorSpace;
+          tex.anisotropy = 4;
+          this.treeTex.set(key, tex);
+        }
+      },
+      undefined,
+      () => token !== this.treeTexToken
+    );
+    if (token === this.treeTexToken && this.treeTex.size) this.build();
+  }
+
+  /** Materiál billboardu stromu pro danou texturu (alpha-test; sdílený). */
+  private treeMaterialFor(tex: THREE.Texture): THREE.Material {
+    let mat = this.treeMat.get(tex);
+    if (!mat) {
+      mat = new THREE.MeshStandardMaterial({
+        map: tex, color: 0xffffff, roughness: 1, metalness: 0,
+        side: THREE.DoubleSide, transparent: false, alphaTest: 0.5,
+      });
+      this.treeMat.set(tex, mat);
+    }
+    return mat;
+  }
+  /** Vrátí override texturu stromu pro objekt (nebo null). */
+  private treeTexFor(o: MapObject): THREE.Texture | null {
+    if (!o.treeTex) return null;
+    return this.treeTex.get(`${dirOf(o.path)}|${o.treeTex.toLowerCase()}`) ?? null;
+  }
+
   private onResize = () => {
     const { clientWidth: w, clientHeight: h } = this.container;
     this.camera.aspect = w / h;
@@ -296,6 +358,7 @@ export class Viewport {
     this.loadSplines();
     this.loadGroundTexture();
     this.loadLightmaps();
+    this.loadTreeTextures();
   }
   rebuild() { this.build(); }
 
@@ -481,24 +544,42 @@ export class Viewport {
       }
       for (const [p, entries] of byPath) {
         const model = this.loadedModels.get(p)!;
+        const isTree = !!model.treeBase;
         for (const part of model.parts) {
-          const inst = new THREE.InstancedMesh(part.geometry, part.material, entries.length);
-          inst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-          const pmap: { tileIndex: number; objectIndex: number }[] = [];
-          entries.forEach((e, k) => {
-            this.setObjMatrix(dummy, t, e.o, model.originRotY, model.absoluteHeight);
-            inst.setMatrixAt(k, dummy.matrix);
-            pmap.push({ tileIndex: ti, objectIndex: e.oi });
-            const key = `${ti}:${e.oi}`;
-            let arr = this.objInstances.get(key);
-            if (!arr) { arr = []; this.objInstances.set(key, arr); }
-            arr.push({ mesh: inst, k, originRotY: model.originRotY, absolute: model.absoluteHeight });
-          });
-          inst.instanceMatrix.needsUpdate = true;
-          inst.frustumCulled = false; // cullujeme na úrovni skupiny dlaždice
-          inst.userData.shared = true; // geometrie/materiál z cache – nedisposovat
-          group.add(inst);
-          this.pickables.push({ mesh: inst, map: pmap, tileIndex: ti });
+          // U stromů rozdělíme instance podle per-objektové textury (druh), jinak
+          // jedna skupina s výchozím materiálem modelu (ne-stromy beze změny).
+          type Grp = { mat: THREE.Material | THREE.Material[]; items: { oi: number; o: MapObject }[] };
+          let groups: Grp[];
+          if (isTree) {
+            const byMat = new Map<THREE.Material | THREE.Material[], { oi: number; o: MapObject }[]>();
+            for (const e of entries) {
+              const tex = this.treeTexFor(e.o);
+              const mat = tex ? this.treeMaterialFor(tex) : part.material;
+              let a = byMat.get(mat); if (!a) { a = []; byMat.set(mat, a); } a.push(e);
+            }
+            groups = [...byMat.entries()].map(([mat, items]) => ({ mat, items }));
+          } else {
+            groups = [{ mat: part.material, items: entries }];
+          }
+          for (const g of groups) {
+            const inst = new THREE.InstancedMesh(part.geometry, g.mat, g.items.length);
+            inst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+            const pmap: { tileIndex: number; objectIndex: number }[] = [];
+            g.items.forEach((e, k) => {
+              this.setObjMatrix(dummy, t, e.o, model.originRotY, model.absoluteHeight);
+              inst.setMatrixAt(k, dummy.matrix);
+              pmap.push({ tileIndex: ti, objectIndex: e.oi });
+              const key = `${ti}:${e.oi}`;
+              let arr = this.objInstances.get(key);
+              if (!arr) { arr = []; this.objInstances.set(key, arr); }
+              arr.push({ mesh: inst, k, originRotY: model.originRotY, absolute: model.absoluteHeight });
+            });
+            inst.instanceMatrix.needsUpdate = true;
+            inst.frustumCulled = false; // cullujeme na úrovni skupiny dlaždice
+            inst.userData.shared = true; // geometrie/materiál z cache – nedisposovat
+            group.add(inst);
+            this.pickables.push({ mesh: inst, map: pmap, tileIndex: ti });
+          }
         }
       }
       if (boxList.length) {
