@@ -24,7 +24,7 @@ const SPL = {
 
 function isObjectSection(name: string) {
   // Jen [object]. [splineAttachement]/[splineAttachement_repeater] mají ÚPLNĚ jiný
-  // layout (index splajnu, příčný offset, interval podél silnice) – parsovat je jako
+  // layout (index splajnu, příčný offset, interval podél silnice) - parsovat je jako
   // běžný objekt by je rozházelo na náhodná místa. Řeší je deriveSplineAttachment,
   // [attachObj] deriveAttachObject.
   return name.toLowerCase() === "object";
@@ -101,7 +101,7 @@ function deriveObject(section: OmsiSection, sectionIndex: number): MapObject | n
  * Kumulativní offset splajnu v řetězci (OMSI `tex_offset`, verze ≥11). Záznam
  * [spline] po gradientech (a u [spline_h] po delta_h) obsahuje cant_start/end
  * (verze ≥5) a pak koncová čísla skew_start/skew_end/tex_offset. tex_offset je
- * 3. koncové číslo (při 1–2 je to 1.; při 0 je 0). map_chain_offset = tex_offset,
+ * 3. koncové číslo (při 1-2 je to 1.; při 0 je 0). map_chain_offset = tex_offset,
  * pokud je konečný a kladný, jinak 0 (přesně jako openOMSI read_spline).
  */
 function splineChainOffset(v: string[], trailingStart: number): number {
@@ -166,7 +166,7 @@ function tileVersion(sections: OmsiSection[]): number {
  *   id, splineIndex, lateral, height, startDist, heading, [v>=12: pitch, bank],
  *   interval, range, [v>=12: tilt], [v>=4: počet stringů + stringy]
  * [splineAttachement_repeater] (pokračování řady v sousední dlaždici) má navíc
- * 2 řádky PŘED cestou (master tile idx, pořadí 1. objektu) – ty findPathLine
+ * 2 řádky PŘED cestou (master tile idx, pořadí 1. objektu) - ty findPathLine
  * přeskočí; pole za cestou jsou identická, takže se parsuje stejně.
  */
 function deriveSplineAttachment(
@@ -206,7 +206,7 @@ function deriveAttachObject(
   const pathIndex = findPathLine(section.values, ".sco");
   if (pathIndex < 0) return null;
   const v = section.values;
-  // Starší verze (v<10) adresují rodiče indexem záznamu – zatím nepodporováno.
+  // Starší verze (v<10) adresují rodiče indexem záznamu - zatím nepodporováno.
   if (version < 10 && version !== 0) return null;
   return {
     id: toInt(v[pathIndex + 1]),
@@ -237,7 +237,7 @@ export function deriveTile(tile: MapTile): void {
     } else if (n === "splineattachement" || n === "splineattachement_repeater") {
       // Běžné i repeater (přes hranice dlaždic). Rozložení polí za cestou je
       // u obou identické; repeater má navíc 2 řádky PŘED cestou (index master
-      // dlaždice + pořadí 1. objektu) – findPathLine je přeskočí a pro umístění
+      // dlaždice + pořadí 1. objektu) - findPathLine je přeskočí a pro umístění
       // se nepoužívají (OMSI je bere jen pro konzistenční kontrolu).
       const a = deriveSplineAttachment(s, i, version);
       if (a) splineAttachments.push(a);
@@ -297,7 +297,7 @@ export function parseGlobalCfg(text: string): {
     if (n === "name" && s.values[0]) name = s.values[0].trim();
     if (n === "friendlyname" && s.values[0]) friendlyName = s.values[0].trim();
     if (n === "groundtex") {
-      // [groundtex]: main textura, detail textura, pak 3 čísla (měřítka) – jen 1./2. řádek.
+      // [groundtex]: main textura, detail textura, pak 3 čísla (měřítka) - jen 1./2. řádek.
       const v = s.values.map((x) => x.trim()).filter((x) => x.length > 0);
       if (v.length >= 1) groundTex.push({ main: v[0], detail: v[1] ?? "" });
     }
@@ -490,7 +490,7 @@ export function createObject(
 }
 
 /**
- * Nastaví výšku/poměr stromového přepisu ve [object] (per-instance velikost –
+ * Nastaví výšku/poměr stromového přepisu ve [object] (per-instance velikost -
  * jediné „měřítko", které OMSI u objektů ukládá). Přepíše první dvě číselné
  * hodnoty v override bloku (count na pathIndex+8, pak count řádků). Vrací true,
  * když blok existuje a má ≥2 čísla; jinak false (běžný objekt / repaint bez čísel).
@@ -528,7 +528,7 @@ export function usedSplinePaths(map: OmsiMap): string[] {
   return [...set].sort((a, b) => a.localeCompare(b));
 }
 
-/** Najde libovolný spline s danou cestou (šablona pro nový spline – formát/cant). */
+/** Najde libovolný spline s danou cestou (šablona pro nový spline - formát/cant). */
 export function findTemplateSpline(map: OmsiMap, path: string): OmsiSection | null {
   const lp = path.toLowerCase();
   for (const t of map.tiles) {
@@ -578,6 +578,80 @@ export function createSpline(
   deriveTile(tile);
   tile.dirty = true;
   return tile.splines.find((s) => s.id === newId) ?? tile.splines[tile.splines.length - 1];
+}
+
+/** Prázdná (plochá) výškmapa dané velikosti a výšky. */
+function flatTerrain(size: number, height: number): { size: number; heights: Float32Array } {
+  const heights = new Float32Array(size * size);
+  heights.fill(height);
+  return { size, heights };
+}
+
+/** Navrhne souřadnice volné dlaždice vedle stávající mapy (vpravo, pak další). */
+export function suggestNewTileCoords(map: OmsiMap): { tileX: number; tileY: number } {
+  if (map.tiles.length === 0) return { tileX: 0, tileY: 0 };
+  const used = new Set(map.tiles.map((t) => `${t.tileX},${t.tileY}`));
+  let maxX = -Infinity, minY = Infinity;
+  for (const t of map.tiles) { maxX = Math.max(maxX, t.tileX); minY = Math.min(minY, t.tileY); }
+  for (let y = minY; y < minY + 64; y++) {
+    const key = `${maxX + 1},${y}`;
+    if (!used.has(key)) return { tileX: maxX + 1, tileY: y };
+  }
+  return { tileX: maxX + 1, tileY: minY };
+}
+
+/**
+ * Přidá novou (prázdnou, plochou) dlaždici do mapy. Strukturu sekcí (hlavička,
+ * verze, groundtex...) naklonuje z existující dlaždice, aby formát přesně seděl;
+ * vyhodí jen obsah (objekty/splajny). Terén je plochý ve výšce `baseHeight`.
+ * Dlaždice se označí `isNew` -> při uložení se zapíše .map/.terrain a doplní
+ * záznam [map] do global.cfg. Vrátí index nové dlaždice.
+ */
+export function createTile(map: OmsiMap, tileX: number, tileY: number, baseHeight?: number): number {
+  const template = map.tiles[0];
+  const CONTENT = new Set([
+    "object", "spline", "spline_h", "splineattachement",
+    "splineattachement_repeater", "attachobj",
+  ]);
+  const sections: OmsiSection[] = template
+    ? template.sections
+        .filter((s) => !CONTENT.has(s.name.toLowerCase()))
+        .map((s) => ({ name: s.name, values: [...s.values] }))
+    : [
+        { name: "__header__", values: ["[OMSI-map]", ""] },
+        { name: "version", values: ["0.3"] },
+      ];
+
+  // Unikátní jméno souboru dlaždice.
+  const existing = new Set(map.tiles.map((t) => t.fileName.toLowerCase()));
+  let fileName = `tile_${tileX}_${tileY}.map`;
+  let n = 1;
+  while (existing.has(fileName.toLowerCase())) fileName = `tile_${tileX}_${tileY}_${n++}.map`;
+
+  // Výchozí výška: zadaná, jinak průměr terénu vzoru, jinak 0.
+  let h = baseHeight ?? 0;
+  if (baseHeight == null && template?.terrain) {
+    const hs = template.terrain.heights;
+    let sum = 0; for (let i = 0; i < hs.length; i++) sum += hs[i] as number;
+    h = hs.length ? sum / hs.length : 0;
+  }
+  const size = template?.terrain?.size ?? 61;
+
+  const tile: MapTile = {
+    tileX, tileY, fileName, sections,
+    objects: [], splines: [], splineAttachments: [], attachObjects: [],
+    groundTextures: [],
+    terrain: flatTerrain(size, h),
+    dirty: true,
+    isNew: true,
+  };
+  deriveTile(tile);
+  map.tiles.push(tile);
+
+  // Doplň záznam [map] do in-memory global sekcí (konzistence + budoucí zápis).
+  map.globalSections.push({ name: "map", values: [String(tileX), String(tileY), fileName] });
+
+  return map.tiles.length - 1;
 }
 
 /** Nastaví nextId existujícího splajnu (pro řetězení nových segmentů). */

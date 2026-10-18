@@ -22,7 +22,7 @@ function decodeOmsi(buf) {
 let win = null;
 
 // ---------------------------------------------------------------------------
-// Konfigurace (userData/config.json) – pamatuje si cestu k OMSI.
+// Konfigurace (userData/config.json) - pamatuje si cestu k OMSI.
 // ---------------------------------------------------------------------------
 function configPath() {
   return path.join(app.getPath("userData"), "config.json");
@@ -38,7 +38,7 @@ function saveConfig(cfg) {
   try {
     fssync.writeFileSync(configPath(), JSON.stringify(cfg, null, 2), "utf8");
   } catch {
-    /* ignoruj – není kritické */
+    /* ignoruj - není kritické */
   }
 }
 
@@ -310,7 +310,7 @@ ipcMain.handle("omsi:openMapFolder", async () => {
   const dirPath = result.filePaths[0];
   const data = await readMapFolder(dirPath);
   if (!data.globalText) {
-    return { error: "Ve složce není global.cfg – nevypadá to jako mapa OMSI 2." };
+    return { error: "Ve složce není global.cfg - nevypadá to jako mapa OMSI 2." };
   }
   return data;
 });
@@ -389,6 +389,30 @@ ipcMain.handle("omsi:pickAsset", async (_e, omsiRoot, kind) => {
   }
 });
 
+ipcMain.handle("omsi:addTileEntries", async (_e, rootPath, entries) => {
+  try {
+    if (!rootPath) return { error: "Chybí cesta ke složce mapy." };
+    if (!entries || entries.length === 0) return { ok: true };
+    const gcPath = path.join(rootPath, "global.cfg");
+    const buf = await fs.readFile(gcPath);
+    const isUtf16 = buf[0] === 0xff && buf[1] === 0xfe;
+    const isUtf8Bom = buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf;
+    const addText =
+      "\r\n" +
+      entries.map((e) => `[map]\r\n${e.tileX}\r\n${e.tileY}\r\n${e.fileName}`).join("\r\n") +
+      "\r\n";
+    let addBuf;
+    if (isUtf16) addBuf = Buffer.from(addText, "utf16le");
+    else if (isUtf8Bom) addBuf = Buffer.from(addText, "utf8");
+    else addBuf = Buffer.from(addText, "latin1"); // CP-1252 ~ latin1 pro ASCII obsah
+    // Append-only: existující bajty zůstanou beze změny (žádné riziko korupce).
+    await fs.writeFile(gcPath, Buffer.concat([buf, addBuf]));
+    return { ok: true };
+  } catch (err) {
+    return { error: String((err && err.message) || err) };
+  }
+});
+
 ipcMain.handle("app:getVersion", async () => app.getVersion());
 
 // ---------------------------------------------------------------------------
@@ -396,7 +420,7 @@ ipcMain.handle("app:getVersion", async () => app.getVersion());
 // ---------------------------------------------------------------------------
 function setupAutoUpdate() {
   if (!app.isPackaged) {
-    // Ve vývoji (nezabalená app) autoupdate neběží – ať UI dostane čistou hlášku
+    // Ve vývoji (nezabalená app) autoupdate neběží - ať UI dostane čistou hlášku
     // místo „No handler registered".
     ipcMain.handle("update:check", async () => ({
       ok: false,

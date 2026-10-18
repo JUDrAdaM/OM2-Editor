@@ -33,9 +33,9 @@ export interface LoadedModel {
  * Matice jednoho [new_attachment] bodu ve three-prostoru.
  *
  * POZOR na konvenci: attachment prostor OMSI je **Z-up** (openOMSI: „x vpravo,
- * y dopředu, z nahoru") – NE Y-up jako samotný mesh. Takže `attach_trans
+ * y dopředu, z nahoru") - NE Y-up jako samotný mesh. Takže `attach_trans
  * [0,15,0]` je 15 m DOPŘEDU (vodorovně), ne nahoru, a `[... , z]` je výška.
- * (Ověřeno: řadové/panelové domy se skládají VEDLE SEBE do řad – `bw_row50s`,
+ * (Ověřeno: řadové/panelové domy se skládají VEDLE SEBE do řad - `bw_row50s`,
  * `wohn_*` mají attach_trans [0,±16,0]; semafor na rameni visí v z≈5.)
  *
  * Matici složíme v OMSI prostoru (m = step · m, záporné úhly jako openOMSI) a
@@ -135,7 +135,7 @@ const GREY: [number, number, number, number] = [0.72, 0.74, 0.77, 1];
 /** Nastaví průhlednost materiálu podle OMSI alpha módu. */
 function applyAlpha(mat: THREE.MeshStandardMaterial, mode: AlphaMode) {
   if (mode === 1) {
-    // alpha-test: ostré hrany (stromy, ploty, sítě) – bez třídění
+    // alpha-test: ostré hrany (stromy, ploty, sítě) - bez třídění
     mat.transparent = false;
     mat.alphaTest = 0.5;
   } else if (mode === 2) {
@@ -195,7 +195,7 @@ function buildGeometry(mesh: O3DMesh, originTrans: [number, number, number], ori
 }
 
 /**
- * Výška pole [crossing_heightdeformation] v bodě (x,z) roviny – barycentrická
+ * Výška pole [crossing_heightdeformation] v bodě (x,z) roviny - barycentrická
  * interpolace přes trojúhelníky pole; max přes pokrývající; miss → null.
  * Náš mesh je Y-up (výška = Y, rovina = X,Z); openOMSI počítá v Z-up, proto
  * openOMSI (x,y)=naše (x,z), openOMSI z(výška)=naše y. (openOMSI place.rs field_height.)
@@ -241,7 +241,7 @@ function applyCrossingDeform(mesh: O3DMesh, field: O3DMesh): number {
 /** Načte mesh objektu: nejdřív zkompilovaný .o3d, při selhání textový .x. */
 async function loadMesh(src: AssetSource, scoDir: string, file: string): Promise<{ mesh: O3DMesh; space: MeshSpace } | null> {
   const stem = baseOf(file).replace(/\.[^.]+$/, "");
-  // 1) .o3d (zkompilovaná varianta – preferovaná)
+  // 1) .o3d (zkompilovaná varianta - preferovaná)
   const o3dBuf = await tryReadNamed(src, [
     join(scoDir, "model", `${stem}.o3d`),
     join(scoDir, `${stem}.o3d`),
@@ -361,7 +361,7 @@ export async function loadModel(src: AssetSource, scoPath: string): Promise<Load
   const scoDir = dirOf(scoPath);
   const parts: ModelPart[] = [];
 
-  // Billboard stromy (pokud objekt má [tree]) – kreslí se místo meshů.
+  // Billboard stromy (pokud objekt má [tree]) - kreslí se místo meshů.
   if (sco.trees.length) {
     for (const tree of sco.trees) {
       const part = await buildTree(src, scoDir, tree);
@@ -383,7 +383,7 @@ export async function loadModel(src: AssetSource, scoPath: string): Promise<Load
   }
 
   // Výběr LOD skupiny: OMSI [LOD] = min. velikost objektu na obrazovce pro daný
-  // mesh. Plný .o3d má typicky 0.1–0.3, zjednodušený „_LOD" bývá 0 → vyšší
+  // mesh. Plný .o3d má typicky 0.1-0.3, zjednodušený „_LOD" bývá 0 → vyšší
   // hodnota = vyšší detail. Editor chce nejvyšší detail, tak bereme nejvyšší LOD
   // skupinu. Některé objekty (železniční návěstidla Sv_ESig_*) mají ale „_LOD"
   // mesh s VYŠŠÍ hodnotou (1) než plný (0.1) a soubor na disku chybí → dřív se

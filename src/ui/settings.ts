@@ -10,6 +10,10 @@ import {
   isElectronApp,
   type UpdateStatus,
 } from "../fs/loader";
+import {
+  allBindings, setBinding, resetBindings, comboFromEvent, conflictOf, prettyKey,
+  type ActionId,
+} from "./keybindings";
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -37,6 +41,9 @@ export class SettingsDialog {
   private checkBtn!: HTMLButtonElement;
   private installBtn!: HTMLButtonElement;
   private pathEl!: HTMLElement;
+  private bindsEl!: HTMLElement;
+  /** Akce, pro kterou právě snímáme novou klávesu (null = nic). */
+  private capturing: ActionId | null = null;
 
   /** Zavolá se po změně cesty k OMSI (aby menu mohlo obnovit seznam map). */
   constructor(private onRootChanged?: (root: string | null) => void) {}
@@ -44,7 +51,9 @@ export class SettingsDialog {
   open() {
     this.render();
     document.body.append(this.overlay);
-    window.addEventListener("keydown", this.onKeyDown);
+    // Capture fáze: během snímání zkratky musí tento posluchač běžet dřív než
+    // globální zkratky editoru (app.ts) a pohyb kamery (viewport).
+    window.addEventListener("keydown", this.onKeyDown, true);
 
     // Live stav aktualizací.
     this.unsub = onUpdateStatus((s) => this.renderUpdate(s));
@@ -56,7 +65,7 @@ export class SettingsDialog {
   close() {
     this.unsub?.();
     this.unsub = null;
-    window.removeEventListener("keydown", this.onKeyDown);
+    window.removeEventListener("keydown", this.onKeyDown, true);
     this.overlay.remove();
   }
 
@@ -125,6 +134,18 @@ export class SettingsDialog {
     changeRow.append(changeBtn);
     bodyEl.append(changeRow);
 
+    // --- Sekce: Klávesové zkratky (vlastní bindy) ---
+    bodyEl.append(el("div", "modal-section-title", "Klávesové zkratky"));
+    this.bindsEl = el("div", "binds");
+    bodyEl.append(this.bindsEl);
+    this.renderBinds();
+    const resetRow = el("div", "set-update");
+    const resetBtn = el("button", "btn btn-sm", "Obnovit výchozí zkratky");
+    resetBtn.addEventListener("click", () => { resetBindings(); this.capturing = null; this.renderBinds(); });
+    resetRow.append(resetBtn);
+    bodyEl.append(resetRow);
+    bodyEl.append(el("div", "hint", "Pohyb kamery (WASD / šipky) a myš jsou pevné - viz Nápověda."));
+
     card.append(bodyEl);
 
     const foot = el("div", "modal-foot");
@@ -140,7 +161,7 @@ export class SettingsDialog {
 
   private async loadVersion() {
     const raw = await getAppVersion();
-    this.versionEl.textContent = formatVersion(raw) || "—";
+    this.versionEl.textContent = formatVersion(raw) || "-";
     const ch = versionChannel(raw);
     this.channelEl.textContent = ch;
     this.channelEl.style.display = ch ? "inline-flex" : "none";
@@ -177,7 +198,7 @@ export class SettingsDialog {
         this.setUpdateStatus("Kontroluji aktualizace…");
         break;
       case "available":
-        this.setUpdateStatus(`Nalezena verze ${s.version ?? ""} – stahuji…`);
+        this.setUpdateStatus(`Nalezena verze ${s.version ?? ""} - stahuji…`);
         break;
       case "downloading":
         this.setUpdateStatus(`Stahuji aktualizaci… ${s.percent ?? 0} %`);
@@ -217,7 +238,7 @@ export class SettingsDialog {
   }
 
   private setPath(root: string | null) {
-    this.pathEl.textContent = root || "Nenalezeno – nastav cestu ručně.";
+    this.pathEl.textContent = root || "Nenalezeno - nastav cestu ručně.";
     this.pathEl.classList.toggle("missing", !root);
   }
 
@@ -233,7 +254,50 @@ export class SettingsDialog {
     }
   }
 
+  // ---------- Klávesové zkratky ----------
+
+  private renderBinds() {
+    this.bindsEl.innerHTML = "";
+    for (const b of allBindings()) {
+      const row = el("div", "set-row");
+      row.append(el("div", "set-key", b.label));
+      const val = el("div", "set-val");
+      const btn = el("button", "btn btn-sm key-btn");
+      if (this.capturing === b.id) {
+        btn.textContent = "Stiskni klávesu… (Esc zruší)";
+        btn.classList.add("btn-primary");
+      } else {
+        btn.append(el("kbd", "kbd", prettyKey(b.key)));
+        if (!b.isDefault) {
+          const def = el("span", "key-default", "(změněno)");
+          btn.append(def);
+        }
+      }
+      btn.addEventListener("click", () => {
+        this.capturing = this.capturing === b.id ? null : b.id;
+        this.renderBinds();
+      });
+      val.append(btn);
+      row.append(val);
+      this.bindsEl.append(row);
+    }
+  }
+
   private onKeyDown = (e: KeyboardEvent) => {
+    // Snímání nové zkratky má přednost před vším ostatním.
+    if (this.capturing) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Escape") { this.capturing = null; this.renderBinds(); return; }
+      const combo = comboFromEvent(e);
+      if (!combo) return; // jen modifikátor - čekej na reálnou klávesu
+      const clash = conflictOf(this.capturing, combo);
+      setBinding(this.capturing, combo);
+      if (clash) this.setUpdateStatus(`Zkratka ${prettyKey(combo)} byla dřív u jiné akce - přepsáno.`, false);
+      this.capturing = null;
+      this.renderBinds();
+      return;
+    }
     if (e.key === "Escape") {
       e.stopPropagation();
       this.close();

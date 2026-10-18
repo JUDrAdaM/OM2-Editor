@@ -6,8 +6,13 @@ import {
 } from "../fs/loader";
 import type { AssetKind } from "../fs/loader";
 import { openSettings } from "./settings";
-import { usedObjectPaths, usedSplinePaths } from "../omsi/map";
+import { openHelp } from "./help";
+import { actionFromEvent } from "./keybindings";
+import { usedObjectPaths, usedSplinePaths, createTile, suggestNewTileCoords } from "../omsi/map";
 import type { OmsiMap } from "../omsi/types";
+
+/** Nástroje v levém panelu: tool-y viewportu + „tile" (UI panel, ne klik-nástroj). */
+type RailId = ToolId | "tile";
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -25,23 +30,24 @@ function baseName(p: string): string {
 }
 
 /** Definice nástrojů v levém panelu (přepínač). */
-const TOOLS: { id: ToolId; label: string; icon: string }[] = [
+const TOOLS: { id: RailId; label: string; icon: string }[] = [
   { id: "select", label: "Výběr", icon: "⬚" },
   { id: "object", label: "Objekt", icon: "🏠" },
   { id: "road", label: "Silnice", icon: "🛣" },
   { id: "terrain", label: "Terén", icon: "⛰" },
   { id: "paint", label: "Povrch", icon: "🖌" },
   { id: "erase", label: "Guma", icon: "🧽" },
+  { id: "tile", label: "Dlaždice", icon: "⊞" },
 ];
 
 const GIZMOS: { id: GizmoMode; label: string; key: string }[] = [
-  { id: "translate", label: "↔ Posun", key: "W" },
-  { id: "rotate", label: "⟳ Rotace", key: "E" },
-  { id: "scale", label: "⤢ Měřítko", key: "T" },
+  { id: "translate", label: "↔ Posun", key: "1" },
+  { id: "rotate", label: "⟳ Rotace", key: "2" },
+  { id: "scale", label: "⤢ Měřítko", key: "3" },
 ];
 
 export class EditorApp {
-  /** Zavolá se při kliknutí na „Menu" – shell přepne na úvodní obrazovku. */
+  /** Zavolá se při kliknutí na „Menu" - shell přepne na úvodní obrazovku. */
   onBackToMenu: (() => void) | null = null;
 
   private viewport!: Viewport;
@@ -55,9 +61,12 @@ export class EditorApp {
   private inspectorEl!: HTMLElement;
 
   // Panel nástrojů
-  private activeTool: ToolId = "select";
-  private toolBtns: Partial<Record<ToolId, HTMLButtonElement>> = {};
-  private toolPanels: Partial<Record<ToolId, HTMLElement>> = {};
+  private activeTool: RailId = "select";
+  private toolBtns: Partial<Record<RailId, HTMLButtonElement>> = {};
+  private toolPanels: Partial<Record<RailId, HTMLElement>> = {};
+  private tileXInput!: HTMLInputElement;
+  private tileYInput!: HTMLInputElement;
+  private baseTexInput!: HTMLInputElement;
   private gizmoBtns: Partial<Record<GizmoMode, HTMLButtonElement>> = {};
 
   private paletteListEl!: HTMLElement;
@@ -81,6 +90,8 @@ export class EditorApp {
     menuBtn.addEventListener("click", () => this.onBackToMenu?.());
     const settingsBtn = el("button", "btn btn-sm", "⚙ Nastavení");
     settingsBtn.addEventListener("click", () => openSettings());
+    const helpBtn = el("button", "btn btn-sm", "? Nápověda");
+    helpBtn.addEventListener("click", () => openHelp());
 
     // Gizmo přepínač (posun / rotace / měřítko)
     const gizmoGroup = el("div", "gizmo-group");
@@ -92,11 +103,11 @@ export class EditorApp {
       gizmoGroup.append(b);
     }
 
-    this.mapNameEl = el("div", "map-name", "—");
+    this.mapNameEl = el("div", "map-name", "-");
     this.dirtyEl = el("div", "dirty-pill");
     this.dirtyEl.style.display = "none";
     this.statsEl = el("div", "stats", "");
-    toolbar.append(brand, menuBtn, settingsBtn, gizmoGroup, el("div", "spacer"), this.statsEl, this.dirtyEl, this.mapNameEl);
+    toolbar.append(brand, menuBtn, settingsBtn, helpBtn, gizmoGroup, el("div", "spacer"), this.statsEl, this.dirtyEl, this.mapNameEl);
 
     // --- Body ---
     const body = el("div", "body");
@@ -133,7 +144,7 @@ export class EditorApp {
 
     const statusbar = el("footer", "statusbar");
     this.statusEl = el("div", "status", "Připraveno.");
-    const help = el("div", "help", "gizmo: W posun · E rotace · T měřítko (stromy) · táhni = posun · šipky = jemný posun · R = rotace · Del = smazat · Ctrl+D = duplikovat · Ctrl+Z/Y = zpět/vpřed · Ctrl+S = uložit · Esc = zrušit");
+    const help = el("div", "help", "WASD / šipky = pohyb kamery · klávesy a zkratky viz ? Nápověda nahoře");
     statusbar.append(this.statusEl, el("div", "spacer"), help);
 
     editor.append(toolbar, body, statusbar);
@@ -157,7 +168,7 @@ export class EditorApp {
   private buildToolPanels(area: HTMLElement) {
     // Výběr
     const sel = el("div", "tool-panel");
-    sel.append(el("div", "hint", "Klikni na objekt nebo spline. Táhnutím ho posuneš. Gizmo: W posun · E rotace · T měřítko (stromy)."));
+    sel.append(el("div", "hint", "Klikni na objekt nebo spline. Táhnutím ho posuneš. Gizmo: 1 posun · 2 rotace · 3 měřítko (stromy)."));
     this.toolPanels.select = sel;
 
     // Objekt (umístění .sco)
@@ -240,11 +251,97 @@ export class EditorApp {
     erase.append(el("div", "hint", "Guma je aktivní: klikni na objekt nebo spline a smažeš ho. Smazání lze vrátit (Ctrl+Z)."));
     this.toolPanels.erase = erase;
 
+    // Dlaždice (přidání nových dlaždic + základní textura terénu)
+    const tile = el("div", "tool-panel");
+    tile.append(el("div", "tool-head", "Přidat dlaždici"));
+    const coordRow = el("div", "palette-add");
+    this.tileXInput = el("input", "edit-input") as HTMLInputElement;
+    this.tileXInput.type = "number"; this.tileXInput.title = "Souřadnice X (sloupec)";
+    this.tileYInput = el("input", "edit-input") as HTMLInputElement;
+    this.tileYInput.type = "number"; this.tileYInput.title = "Souřadnice Y (řádek)";
+    coordRow.append(el("span", "edit-label", "X"), this.tileXInput, el("span", "edit-label", "Y"), this.tileYInput);
+    const addTileBtn = el("button", "btn btn-sm btn-primary", "Přidat dlaždici");
+    addTileBtn.addEventListener("click", () => this.addTile());
+    tile.append(coordRow, addTileBtn,
+      el("div", "hint", "Vytvoří prázdnou plochou dlaždici (300x300 m) vedle mapy. Uloží se do mapy včetně záznamu v global.cfg."));
+
+    tile.append(el("div", "tool-head", "Základní textura terénu"));
+    const texRow = el("div", "palette-add");
+    this.baseTexInput = el("input", "edit-input") as HTMLInputElement;
+    this.baseTexInput.placeholder = "Texture\\…\\gras.bmp";
+    const texBrowse = el("button", "btn btn-sm", "Procházet…");
+    texBrowse.addEventListener("click", () => this.browseBaseTexture());
+    const texBtn = el("button", "btn btn-sm", "Použít");
+    texBtn.addEventListener("click", () => this.applyBaseTexture(this.baseTexInput.value.trim()));
+    texRow.append(this.baseTexInput, texBrowse, texBtn);
+    const texList = el("div", "palette-list");
+    texList.id = "__baseTexList";
+    tile.append(texRow, texList,
+      el("div", "hint", "Náhled základní textury (tráva apod.) pro celou mapu. Změna palety v global.cfg se zatím neukládá."));
+    this.toolPanels.tile = tile;
+
     for (const t of TOOLS) { const p = this.toolPanels[t.id]!; p.style.display = "none"; area.append(p); }
   }
 
+  /** Přidá novou dlaždici na zadané (nebo navržené) souřadnice. */
+  private addTile() {
+    if (!this.map) return;
+    const sug = suggestNewTileCoords(this.map);
+    const tx = Number.isFinite(parseInt(this.tileXInput.value, 10)) ? parseInt(this.tileXInput.value, 10) : sug.tileX;
+    const ty = Number.isFinite(parseInt(this.tileYInput.value, 10)) ? parseInt(this.tileYInput.value, 10) : sug.tileY;
+    if (this.map.tiles.some((t) => t.tileX === tx && t.tileY === ty)) {
+      this.setStatus(`Dlaždice [${tx}, ${ty}] už existuje.`, true);
+      return;
+    }
+    const idx = createTile(this.map, tx, ty);
+    this.viewport.focusTile(idx);
+    this.renderTree(this.map);
+    this.updateStats();
+    this.updateDirty();
+    // navrhni další volné souřadnice
+    const next = suggestNewTileCoords(this.map);
+    this.tileXInput.value = String(next.tileX);
+    this.tileYInput.value = String(next.tileY);
+    this.setStatus(`Přidána dlaždice [${tx}, ${ty}]. Ulož (Ctrl+S) pro zápis do mapy.`);
+  }
+
+  private async browseBaseTexture() {
+    if (!this.map) return;
+    if (!isElectronApp()) { this.setStatus("Procházení funguje v desktop aplikaci.", true); return; }
+    try {
+      const rels = await pickAssetFiles("texture", omsiRootOf(this.map));
+      if (rels[0]) { this.baseTexInput.value = rels[0]; this.applyBaseTexture(rels[0]); }
+    } catch (err) { this.setStatus("Chyba: " + (err as Error).message, true); }
+  }
+
+  /** Nastaví základní texturu terénu mapy (náhled; groundTex[0]). */
+  private applyBaseTexture(path: string) {
+    if (!this.map || !path) return;
+    if (this.map.groundTex.length === 0) this.map.groundTex.push({ main: path, detail: "" });
+    else this.map.groundTex[0] = { main: path, detail: this.map.groundTex[0].detail };
+    this.viewport.reloadGround();
+    this.renderBaseTexList();
+    this.setStatus(`Základní textura: ${baseName(path)} (náhled).`);
+  }
+
+  private renderBaseTexList() {
+    const list = document.getElementById("__baseTexList");
+    if (!list || !this.map) return;
+    list.innerHTML = "";
+    const seen = new Set<string>();
+    for (const g of this.map.groundTex) {
+      if (!g.main || seen.has(g.main.toLowerCase())) continue;
+      seen.add(g.main.toLowerCase());
+      const item = el("div", "palette-item", baseName(g.main));
+      item.title = g.main;
+      item.addEventListener("click", () => { this.baseTexInput.value = g.main; this.applyBaseTexture(g.main); });
+      list.append(item);
+    }
+    if (seen.size === 0) list.append(el("div", "hint", "Zadej cestu k textuře výše."));
+  }
+
   /** Přepne aktivní nástroj (zobrazí jeho panel + aktivuje ve viewportu). */
-  private selectTool(id: ToolId) {
+  private selectTool(id: RailId) {
     this.activeTool = id;
     for (const t of TOOLS) {
       this.toolBtns[t.id]?.classList.toggle("active", t.id === id);
@@ -253,7 +350,13 @@ export class EditorApp {
     // Aktivace ve viewportu podle nástroje.
     if (id === "terrain") this.viewport.setTerrainMode("raise");
     else if (id === "erase") this.viewport.setEraseMode(true);
-    else this.viewport.clearTools(); // select / object / road / paint – mód začne výběrem souboru
+    else this.viewport.clearTools(); // select / object / road / paint / tile
+    if (id === "tile" && this.map) {
+      const sug = suggestNewTileCoords(this.map);
+      if (!this.tileXInput.value) this.tileXInput.value = String(sug.tileX);
+      if (!this.tileYInput.value) this.tileYInput.value = String(sug.tileY);
+      this.renderBaseTexList();
+    }
   }
 
   /** Udrží zvýraznění railu v souladu s reálným stavem viewportu (Esc apod.). */
@@ -475,7 +578,7 @@ export class EditorApp {
     this.addMeta([
       ["Typ", "Objekt (.sco)"],
       ["Soubor", baseName(o.path)],
-      ["ID", String(o.id ?? "—")],
+      ["ID", String(o.id ?? "-")],
       ["Dlaždice", `${tile.tileX}, ${tile.tileY}`],
     ]);
     this.inspectorEl.append(el("div", "prop-sep", "Transformace"));
@@ -500,8 +603,8 @@ export class EditorApp {
     this.addMeta([
       ["Typ", "Spline (.sli)"],
       ["Soubor", baseName(s.path)],
-      ["ID", String(s.id ?? "—")],
-      ["Navázání", `prev ${s.prevId ?? "—"} · next ${s.nextId ?? "—"}`],
+      ["ID", String(s.id ?? "-")],
+      ["Navázání", `prev ${s.prevId ?? "-"} · next ${s.nextId ?? "-"}`],
       ["Dlaždice", `${tile.tileX}, ${tile.tileY}`],
     ]);
     this.inspectorEl.append(el("div", "prop-sep", "Geometrie"));
@@ -581,7 +684,7 @@ export class EditorApp {
   private updateDirty() {
     const dirty = this.map ? this.map.tiles.filter((t) => t.dirty).length : 0;
     this.dirtyEl.style.display = dirty > 0 ? "inline-flex" : "none";
-    this.dirtyEl.textContent = dirty > 0 ? `● neuloženo (${dirty}) — Ctrl+S` : "";
+    this.dirtyEl.textContent = dirty > 0 ? `● neuloženo (${dirty}) - Ctrl+S` : "";
     this.mapNameEl.classList.toggle("dirty", dirty > 0);
   }
 
@@ -600,41 +703,32 @@ export class EditorApp {
   private onKeyDown = (e: KeyboardEvent) => {
     const target = e.target as HTMLElement;
     const inField = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA");
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+
+    // Konfigurovatelné bindy (viz Nastavení). Ctrl-zkratky a Esc fungují i v poli.
+    const action = actionFromEvent(e);
+    const ctrlLike = e.ctrlKey || e.metaKey;
+    if (action && (ctrlLike || action === "cancel" || !inField)) {
       e.preventDefault();
-      this.handleSave();
-      return;
-    }
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
-      e.preventDefault();
-      this.setStatus(this.viewport.undo() ? "Vráceno zpět (Ctrl+Z)." : "Není co vrátit.");
-      return;
-    }
-    if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey))) {
-      e.preventDefault();
-      this.setStatus(this.viewport.redo() ? "Znovu provedeno (Ctrl+Y)." : "Není co znovu provést.");
-      return;
-    }
-    if (e.key === "Escape") {
-      if (this.viewport.isToolActive()) { this.viewport.clearTools(); this.setStatus("Nástroj ukončen."); }
-      this.selectTool("select");
-      return;
+      switch (action) {
+        case "save": this.handleSave(); return;
+        case "undo": this.setStatus(this.viewport.undo() ? "Vráceno zpět." : "Není co vrátit."); return;
+        case "redo": this.setStatus(this.viewport.redo() ? "Znovu provedeno." : "Není co znovu provést."); return;
+        case "duplicate": this.viewport.duplicateSelected(); return;
+        case "delete": if (this.viewport.getSelection()) this.viewport.deleteSelected(); return;
+        case "rotate": this.viewport.rotateSelected(e.shiftKey ? -15 : 15); return;
+        case "gizmoMove": this.viewport.setGizmoMode("translate"); return;
+        case "gizmoRotate": this.viewport.setGizmoMode("rotate"); return;
+        case "gizmoScale": this.viewport.setGizmoMode("scale"); return;
+        case "cancel":
+          if (this.viewport.isToolActive()) { this.viewport.clearTools(); this.setStatus("Nástroj ukončen."); }
+          this.selectTool("select");
+          return;
+      }
     }
     if (inField) return;
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "d") {
-      e.preventDefault();
-      this.viewport.duplicateSelected();
-    } else if (e.key === "Delete" || e.key === "Backspace") {
-      if (this.viewport.getSelection()) { e.preventDefault(); this.viewport.deleteSelected(); }
-    } else if (e.key === "r") {
-      this.viewport.rotateSelected(e.shiftKey ? -15 : 15);
-    } else if (e.key === "w" || e.key === "W") {
-      this.viewport.setGizmoMode("translate");
-    } else if (e.key === "e" || e.key === "E") {
-      this.viewport.setGizmoMode("rotate");
-    } else if (e.key === "t" || e.key === "T") {
-      this.viewport.setGizmoMode("scale");
-    } else if (e.key.startsWith("Arrow") && this.viewport.getSelection()) {
+    // Jemný posun vybraného prvku šipkami (když je něco vybráno; jinak šipky =
+    // pohyb kamery, který řeší viewport). Shift = větší krok.
+    if (e.key.startsWith("Arrow") && this.viewport.getSelection()) {
       const step = e.shiftKey ? 5 : 0.5;
       const d: Record<string, [number, number]> = {
         ArrowRight: [step, 0], ArrowLeft: [-step, 0],

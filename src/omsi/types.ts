@@ -1,6 +1,6 @@
 // Datový model mapy OMSI 2.
 //
-// Round-trip princip: ZDROJEM PRAVDY je pole `sections` každé dlaždice –
+// Round-trip princip: ZDROJEM PRAVDY je pole `sections` každé dlaždice -
 // přesné sekce .map souboru v původním pořadí (včetně hlavičky a sekcí, které
 // neumíme interpretovat). Objekty a splajny jsou jen „pohled" s odkazem zpět
 // (sectionIndex, pathIndex). Díky tomu uložíme soubor beze ztráty dat a ve
@@ -39,7 +39,7 @@ export interface MapObject {
   rotX: number;
   rotY: number;
   rotZ: number;
-  /** Per-instance výška stromu (metry) z přepisu v [object] – stromy se stejným
+  /** Per-instance výška stromu (metry) z přepisu v [object] - stromy se stejným
    *  .sco mají různou velikost (přirozený les). undef = použít výchozí ze .sco. */
   treeHeight?: number;
   /** Per-instance poměr šířka/výška billboardu stromu (z téhož přepisu). */
@@ -55,7 +55,7 @@ export interface MapObject {
 /** Spline (silnice, kolej, chodník …, .sli) na dlaždici. */
 export interface MapSpline {
   id: number | null;
-  /** ID navazujícího předchozího/dalšího splajnu (0 = žádný) – pro řetězení. */
+  /** ID navazujícího předchozího/dalšího splajnu (0 = žádný) - pro řetězení. */
   prevId: number | null;
   nextId: number | null;
   path: string;
@@ -114,7 +114,7 @@ export interface SplineAttachment {
 
 /** [attachObj]: objekt zavěšený na bodu [new_attachment] rodičovského objektu. */
 export interface AttachObject {
-  /** Vlastní ID (aby na tomto objektu mohly viset další [attachObj] – vnořené). */
+  /** Vlastní ID (aby na tomto objektu mohly viset další [attachObj] - vnořené). */
   id: number | null;
   /** Cesta k .sco. */
   path: string;
@@ -136,13 +136,13 @@ export interface MapTile {
   fileName: string;
   /** ZDROJ PRAVDY: všechny sekce .map v původním pořadí (vč. hlavičky). */
   sections: OmsiSection[];
-  /** Odvozený pohled – objekty. */
+  /** Odvozený pohled - objekty. */
   objects: MapObject[];
-  /** Odvozený pohled – splajny. */
+  /** Odvozený pohled - splajny. */
   splines: MapSpline[];
-  /** Odvozený pohled – řady objektů podél splajnů ([splineAttachement]). */
+  /** Odvozený pohled - řady objektů podél splajnů ([splineAttachement]). */
   splineAttachments: SplineAttachment[];
-  /** Odvozený pohled – objekty zavěšené na rodičích ([attachObj]). */
+  /** Odvozený pohled - objekty zavěšené na rodičích ([attachObj]). */
   attachObjects: AttachObject[];
   /** Odkazy na textury terénu (groundtex), pořadí = index. */
   groundTextures: string[];
@@ -150,6 +150,9 @@ export interface MapTile {
   terrain?: TerrainData;
   /** Dlaždice byla editována a čeká na uložení. */
   dirty: boolean;
+  /** Nová dlaždice přidaná v editoru (ještě není v global.cfg na disku). Při
+   *  uložení se zapíše její .map + .terrain a doplní záznam [map] do global.cfg. */
+  isNew?: boolean;
 }
 
 /** Celá mapa. */

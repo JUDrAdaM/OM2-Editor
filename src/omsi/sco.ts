@@ -1,7 +1,7 @@
 import { parseOmsiConfig } from "./parser";
 
 /** Mód průhlednosti materiálu z [matl_alpha]. 0 = neprůhledný, 1 = alpha-test
- *  (ostré hrany – stromy, ploty, sítě), 2 = alpha-blend (sklo, poloprůhledné). */
+ *  (ostré hrany - stromy, ploty, sítě), 2 = alpha-blend (sklo, poloprůhledné). */
 export type AlphaMode = 0 | 1 | 2;
 
 /** Jeden materiál ze .sco: přepis textury pro daný index materiálu v meshi. */
@@ -42,7 +42,7 @@ export interface ScoInfo {
   /** Billboard stromy ([tree]); pokud je neprázdné, objekt se kreslí jako billboard. */
   trees: ScoTree[];
   /** Absolutní výška: [absheight] NEBO objekt má [path] (křižovatky, výhybky, kusy
-   *  silnic). Takový objekt se umisťuje na svoji z (bez přičtení terénu) – viz OMSI. */
+   *  silnic). Takový objekt se umisťuje na svoji z (bez přičtení terénu) - viz OMSI. */
   absHeight: boolean;
   /** Body [new_attachment] (pro [attachObj]): každý je seznam operací attach_trans /
    *  attach_rot_x/y/z v pořadí, jak stojí v souboru. */
@@ -107,7 +107,7 @@ export function parseSco(text: string): ScoInfo {
     } else if (n === "tree") {
       // [tree]: textura, minVýška, maxVýška, minPoměr(š/v), maxPoměr. Reálný strom
       // má navíc ŠABLONU s placeholdery ({texture}, {minheight}…), kterou OMSI
-      // ignoruje – jinak by vznikl zelený fallback billboard „navíc".
+      // ignoruje - jinak by vznikl zelený fallback billboard „navíc".
       const vals = s.values.map((v) => v.trim()).filter((v) => v.length > 0);
       const tex = vals[0];
       if (tex && !tex.includes("{")) {
@@ -136,7 +136,7 @@ export function parseSco(text: string): ScoInfo {
     }
 
     // attach_trans / attach_rot_* řádky patří poslednímu [new_attachment] (i napříč
-    // sekcemi – OMSI je čte jako celé řádky kdekoliv za ním).
+    // sekcemi - OMSI je čte jako celé řádky kdekoliv za ním).
     if (curAttach) {
       for (let i = 0; i < s.values.length; i++) {
         const tok = s.values[i].trim().toLowerCase();
@@ -153,6 +153,6 @@ export function parseSco(text: string): ScoInfo {
   // Vracíme VŠECHNY meshe (s jejich LOD hodnotou). Výběr LOD skupiny dělá
   // loadModel, protože potřebuje vědět, které soubory se reálně načetly:
   // bere nejvyšší LOD (nejvyšší detail), a když její soubory chybí na disku,
-  // spadne na nižší – jinak by objekt s chybějícím mesh souborem byl jen box.
+  // spadne na nižší - jinak by objekt s chybějícím mesh souborem byl jen box.
   return { meshes: all, trees, absHeight, attachments, crossingDeform };
 }

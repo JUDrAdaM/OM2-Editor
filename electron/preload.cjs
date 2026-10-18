@@ -1,7 +1,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 // Bezpečný most mezi rendererem a hlavním procesem.
-// Renderer nemá přímý přístup k Node/fs – jen k těmto funkcím.
+// Renderer nemá přímý přístup k Node/fs - jen k těmto funkcím.
 contextBridge.exposeInMainWorld("omsiAPI", {
   isElectron: true,
 
@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld("omsiAPI", {
   readAsset: (omsiRoot, relPath) => ipcRenderer.invoke("omsi:readAsset", omsiRoot, relPath),
   /** Otevře dialog pro výběr souboru(ů) assetu; vrací cesty relativní ke kořeni OMSI. */
   pickAsset: (omsiRoot, kind) => ipcRenderer.invoke("omsi:pickAsset", omsiRoot, kind),
+  /** Doplní záznamy [map] (nové dlaždice) na konec global.cfg. */
+  addTileEntries: (rootPath, entries) => ipcRenderer.invoke("omsi:addTileEntries", rootPath, entries),
 
   // --- Verze + autoupdate ---
   getVersion: () => ipcRenderer.invoke("app:getVersion"),

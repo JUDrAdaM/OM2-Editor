@@ -2,7 +2,7 @@
  * Asynchronní pomůcky pro řízené zpracování velkého množství práce.
  *
  * Hlavní motiv: velké mapy (Berlin-Spandau ~889 unikátních modelů, každý čte
- * desítky souborů) nesmí spustit desetitisíce souběžných čtení najednou –
+ * desítky souborů) nesmí spustit desetitisíce souběžných čtení najednou -
  * to přetíží I/O (fetch/IPC) a vyčerpá paměť. Proto běží omezený „pool"
  * pracovníků (bounded worker pool), který načítá postupně s hlášením postupu.
  */

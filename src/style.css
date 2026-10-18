@@ -510,6 +510,25 @@ body {
 .set-update-status.error { color: var(--danger); }
 .set-update-status.ready { color: var(--accent); }
 
+/* ---- Klávesové zkratky / nápověda ---- */
+.kbd {
+  display: inline-block;
+  font: 11px/1.4 ui-monospace, Consolas, monospace;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  padding: 2px 7px;
+  min-width: 18px;
+  text-align: center;
+}
+.key-btn { display: inline-flex; align-items: center; gap: 6px; }
+.key-default { color: var(--accent-2); font-size: 11px; }
+.binds { display: flex; flex-direction: column; }
+.help-label { min-width: 0; color: var(--text); }
+.help-label.set-key { color: var(--text); }
+
 /* scrollbars */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: #2a3645; border-radius: 6px; }

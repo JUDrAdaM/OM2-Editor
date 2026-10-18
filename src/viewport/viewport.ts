@@ -15,7 +15,7 @@ import { SplineCache, buildSplineMesh, splineCenterline, splineSampleAt } from "
 import type { LoadedSpline } from "./splines";
 import { runPool } from "../util/async";
 
-/** Max. souběžně načítaných assetů (bounded pool – brání I/O zahlcení u velkých map). */
+/** Max. souběžně načítaných assetů (bounded pool - brání I/O zahlcení u velkých map). */
 const ASSET_CONCURRENCY = 24;
 
 function tileHeight(t: MapTile, x: number, y: number): number {
@@ -50,7 +50,7 @@ export class Viewport {
   private readonly pointer = new THREE.Vector2();
 
   // Transformační gizmo (manipulátor jako v Unreal / Roblox): posun XYZ, rotace,
-  // měřítko (měřítko jen u stromů – OMSI jinde velikost objektu neukládá).
+  // měřítko (měřítko jen u stromů - OMSI jinde velikost objektu neukládá).
   private gizmo!: TransformControls;
   private readonly gizmoProxy = new THREE.Object3D();
   private gizmoMode: GizmoMode = "translate";
@@ -82,7 +82,7 @@ export class Viewport {
 
   private dragging: "object" | "spline" | null = null;
   private dragMoved = false;
-  /** Pozice stisku (px) – tažení se počítá až po překročení prahu (brání tomu,
+  /** Pozice stisku (px) - tažení se počítá až po překročení prahu (brání tomu,
    *  aby pouhý klik mikro-posunem označil dlaždici jako změněnou). */
   private dragStartScreen: { x: number; y: number } | null = null;
   private static readonly DRAG_THRESHOLD_PX = 3;
@@ -175,7 +175,7 @@ export class Viewport {
     this.renderer.toneMappingExposure = 1.15;
     container.appendChild(this.renderer.domElement);
 
-    // Malý výkonnostní HUD (FPS · viditelné/celkem dlaždic) – důkaz cullingu.
+    // Malý výkonnostní HUD (FPS · viditelné/celkem dlaždic) - důkaz cullingu.
     this.hud = document.createElement("div");
     this.hud.style.cssText =
       "position:absolute;top:8px;left:8px;z-index:5;pointer-events:none;" +
@@ -214,7 +214,7 @@ export class Viewport {
     this.highlight.renderOrder = 2;
     this.scene.add(this.highlight);
 
-    // Transformační gizmo – manipulátor na vybraném prvku (osy posunu / prstence
+    // Transformační gizmo - manipulátor na vybraném prvku (osy posunu / prstence
     // rotace / krychličky měřítka). Kreslí se přímo ve scéně (ne ve worldGroup →
     // nepodléhá cullingu ani disposu). Proxy objekt nese transformaci; po změně se
     // přepíše zpět do polí objektu/splajnu (zdroj pravdy = sekce .map).
@@ -232,6 +232,9 @@ export class Viewport {
     window.addEventListener("pointermove", this.onPointerMove);
     window.addEventListener("pointerup", this.onPointerUp);
     window.addEventListener("resize", this.onResize);
+    window.addEventListener("keydown", this.onCamKeyDown);
+    window.addEventListener("keyup", this.onCamKeyUp);
+    window.addEventListener("blur", () => { this.camDirs.clear(); });
     this.animate();
   }
 
@@ -243,7 +246,7 @@ export class Viewport {
   setGizmoMode(mode: GizmoMode) {
     if (mode === "scale") {
       if (this.selection?.kind === "spline") {
-        this.onStatus?.("Spline nelze škálovat – uprav Délku/Poloměr v inspektoru.", true);
+        this.onStatus?.("Spline nelze škálovat - uprav Délku/Poloměr v inspektoru.", true);
         return;
       }
       if (this.selection?.kind === "object" && !this.loadedModels.get(this.selection.object.path)?.treeBase) {
@@ -269,7 +272,7 @@ export class Viewport {
   /** Připne gizmo na vybraný prvek (pokud není aktivní jiný nástroj). */
   private attachGizmo() {
     if (!this.selection || this.tool || this.placePath) { this.detachGizmo(); return; }
-    // Měřítko dává smysl jen u stromů – jinak spadni na posun.
+    // Měřítko dává smysl jen u stromů - jinak spadni na posun.
     if (this.gizmoMode === "scale" &&
         !(this.selection.kind === "object" && this.loadedModels.get(this.selection.object.path)?.treeBase)) {
       this.gizmoMode = "translate";
@@ -412,7 +415,7 @@ export class Viewport {
   }
 
   /**
-   * Načte zapečené lightmapy terénu (`<mapa>/tile_X_Y.map.LM.bmp`) – stíny/AO,
+   * Načte zapečené lightmapy terénu (`<mapa>/tile_X_Y.map.LM.bmp`) - stíny/AO,
    * které OMSI předpočítá a editor zobrazuje. Nanáší se na terén přes 2. UV sadu
    * (uv1, 0..1 přes dlaždici) jako `lightMap`, takže terén není plochý jas, ale
    * má měkké stínování. Načítá se přes bounded pool (progresivně) a jen pro
@@ -509,17 +512,79 @@ export class Viewport {
   };
   private animate = () => {
     requestAnimationFrame(this.animate);
+    this.updateCameraMove();
     this.controls.update();
     this.updateVisibility();
     this.renderer.render(this.scene, this.camera);
     this.updateHud();
   };
 
+  // ---------- Pohyb kamery klávesnicí (WASD + šipky) ----------
+
+  private readonly camDirs = new Set<"fwd" | "back" | "left" | "right">();
+  private camFast = false;
+  private camLastT = performance.now();
+  private readonly _cv1 = new THREE.Vector3();
+  private readonly _cv2 = new THREE.Vector3();
+  private readonly _cv3 = new THREE.Vector3();
+
+  private isTypingTarget(): boolean {
+    const ae = document.activeElement as HTMLElement | null;
+    return !!ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable);
+  }
+
+  private onCamKeyDown = (e: KeyboardEvent) => {
+    if (this.isTypingTarget() || e.ctrlKey || e.metaKey || e.altKey) return;
+    this.camFast = e.shiftKey;
+    const k = e.key.toLowerCase();
+    // WASD vždy, šipky jen když nic není vybráno (jinak šipky = jemný posun).
+    const arrowsForCam = this.selection == null;
+    if (k === "w" || (arrowsForCam && e.key === "ArrowUp")) this.camDirs.add("fwd");
+    else if (k === "s" || (arrowsForCam && e.key === "ArrowDown")) this.camDirs.add("back");
+    else if (k === "a" || (arrowsForCam && e.key === "ArrowLeft")) this.camDirs.add("left");
+    else if (k === "d" || (arrowsForCam && e.key === "ArrowRight")) this.camDirs.add("right");
+    else return;
+    if (arrowsForCam && e.key.startsWith("Arrow")) e.preventDefault();
+  };
+  private onCamKeyUp = (e: KeyboardEvent) => {
+    this.camFast = e.shiftKey;
+    const k = e.key.toLowerCase();
+    if (k === "w" || e.key === "ArrowUp") this.camDirs.delete("fwd");
+    if (k === "s" || e.key === "ArrowDown") this.camDirs.delete("back");
+    if (k === "a" || e.key === "ArrowLeft") this.camDirs.delete("left");
+    if (k === "d" || e.key === "ArrowRight") this.camDirs.delete("right");
+  };
+
+  /** Posune kameru (i cíl orbitu) ve vodorovné rovině podle aktivních směrů. */
+  private updateCameraMove() {
+    const now = performance.now();
+    const dt = Math.min(0.1, (now - this.camLastT) / 1000); // s, nezávislé na FPS
+    this.camLastT = now;
+    if (this.camDirs.size === 0) return;
+    const fwd = this.camera.getWorldDirection(this._cv1);
+    fwd.y = 0;
+    if (fwd.lengthSq() < 1e-6) return;
+    fwd.normalize();
+    const right = this._cv2.set(-fwd.z, 0, fwd.x); // kolmice vpravo na ploše
+    const dist = this.camera.position.distanceTo(this.controls.target);
+    // ~0.8x vzdálenosti za sekundu (Shift 3x), nezávisle na snímkování.
+    const step = Math.max(4, dist * 0.8) * dt * (this.camFast ? 3 : 1);
+    const move = this._cv3.set(0, 0, 0);
+    if (this.camDirs.has("fwd")) move.add(fwd);
+    if (this.camDirs.has("back")) move.sub(fwd);
+    if (this.camDirs.has("right")) move.add(right);
+    if (this.camDirs.has("left")) move.sub(right);
+    if (move.lengthSq() === 0) return;
+    move.normalize().multiplyScalar(step);
+    this.camera.position.add(move);
+    this.controls.target.add(move);
+  }
+
   /**
    * Per-dlaždicový culling: dlaždice se submituje jen když je v zorném poli
    * (frustum) A zároveň v dosahu od cíle kamery (distance culling). Dosah roste
    * se zoomem (vzdálenost kamera↔cíl), takže zaostřená oblast je vždy celá vidět;
-   * ořízne se jen vzdálená periferie – hlavní přínos u nízkých „grazing" pohledů
+   * ořízne se jen vzdálená periferie - hlavní přínos u nízkých „grazing" pohledů
    * přes velké mapy, kde by frustum jinak pustil stovky dlaždic až k obzoru.
    */
   private updateVisibility() {
@@ -580,6 +645,19 @@ export class Viewport {
     this.loadTreeTextures();
   }
   rebuild() { this.build(); }
+  /** Znovu načte základní texturu terénu (po změně map.groundTex[0]). */
+  reloadGround() { void this.loadGroundTexture(); }
+  /** Přestaví scénu a zacíli na danou dlaždici (po přidání nové dlaždice). */
+  focusTile(tileIndex: number) {
+    if (!this.currentMap) return;
+    this.build();
+    const t = this.currentMap.tiles[tileIndex];
+    if (!t) return;
+    const cx = (t.tileX + 0.5) * TILE_SIZE, cz = -(t.tileY + 0.5) * TILE_SIZE;
+    const base = t.terrain ? (t.terrain.heights[0] as number) : 0;
+    this.controls.target.set(cx, base, cz);
+    this.camera.position.set(cx + 120, base + 260, cz + 220);
+  }
 
   private async loadSplines() {
     if (!this.splineCache || !this.currentMap) return;
@@ -659,7 +737,7 @@ export class Viewport {
     // `recordPose`: ID záznamu → světová matice + cesta modelu. Obsahuje objekty,
     // „kotvy" řad (1. objekt non-repeater [splineAttachement]) a vyřešené [attachObj].
     // Díky tomu [attachObj] může viset na objektu, na kotvě řady, i na jiném
-    // [attachObj] (vnořené – ~39 % případů). Řešení je fixed-point (rekurze s
+    // [attachObj] (vnořené - ~39 % případů). Řešení je fixed-point (rekurze s
     // memoizací), stejně jako openOMSI compute_resolved.
     const recordPose = new Map<number, { mat: THREE.Matrix4; path: string }>();
     // Objekty
@@ -797,7 +875,7 @@ export class Viewport {
             });
             inst.instanceMatrix.needsUpdate = true;
             inst.frustumCulled = false; // cullujeme na úrovni skupiny dlaždice
-            inst.userData.shared = true; // geometrie/materiál z cache – nedisposovat
+            inst.userData.shared = true; // geometrie/materiál z cache - nedisposovat
             group.add(inst);
             this.pickables.push({ mesh: inst, map: pmap, tileIndex: ti });
           }
@@ -824,7 +902,7 @@ export class Viewport {
       }
 
       // [splineAttachement] (řady podél splajnů) + [attachObj] (zavěšené objekty)
-      // této dlaždice – matice jsou předpočítané výše (vč. vnořených attachObj).
+      // této dlaždice - matice jsou předpočítané výše (vč. vnořených attachObj).
       const attByPath = new Map<string, THREE.Matrix4[]>();
       const pushMat = (path: string, m: THREE.Matrix4) => {
         let mats = attByPath.get(path);
@@ -1001,7 +1079,7 @@ export class Viewport {
     // v lokálních souřadnicích řetězce (od začátku tohoto splajnu) je objekt j na
     // d0 + j·interval. Objekty se zápornou vzdáleností leží na předchozí dlaždici
     // (kreslí je její repeater), objekty za koncem splajnů této dlaždice na další
-    // (přesně jako OMSI – chain se nechodí přes hranice dlaždic). Viz openOMSI
+    // (přesně jako OMSI - chain se nechodí přes hranice dlaždic). Viz openOMSI
     // omsi-world map_index::tile_row_objects (d0 = offset.start − chain_offset).
     const startSpline = t.splines[a.splineIndex];
     const chainOffset = startSpline ? startSpline.chainOffset : 0;
@@ -1046,7 +1124,7 @@ export class Viewport {
   private isAbsolute(path: string): boolean {
     return this.loadedModels.get(path)?.absoluteHeight ?? false;
   }
-  /** Světová výška (osa Y) základny objektu – absolutní z, nebo terén + z. */
+  /** Světová výška (osa Y) základny objektu - absolutní z, nebo terén + z. */
   private objBaseY(t: MapTile, o: MapObject): number {
     return this.isAbsolute(o.path) ? o.z : tileHeight(t, o.x, o.y) + o.z;
   }
@@ -1074,7 +1152,7 @@ export class Viewport {
     const rep = Viewport.GROUND_REPEAT;
     const positions = new Float32Array(n * n * 3);
     const uvs = new Float32Array(n * n * 2);
-    const uv1 = new Float32Array(n * n * 2); // 0..1 přes dlaždici – pro lightmapu
+    const uv1 = new Float32Array(n * n * 2); // 0..1 přes dlaždici - pro lightmapu
     for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
       const idx = j * n + i;
       const w = worldPos(t.tileX, t.tileY, i * step, j * step, terr.heights[idx]);
@@ -1146,7 +1224,7 @@ export class Viewport {
 
   private onPointerDown = (e: PointerEvent) => {
     if (e.button !== 0 || !this.currentMap) return;
-    // Klik na rukojeť gizma (hover/drag) obsluhuje TransformControls – neruš výběr
+    // Klik na rukojeť gizma (hover/drag) obsluhuje TransformControls - neruš výběr
     // ani nespouštěj tažení přes rovinu.
     if (this.gizmo?.enabled && (this.gizmo.dragging || this.gizmo.axis)) return;
     this.updatePointer(e);
@@ -1209,7 +1287,7 @@ export class Viewport {
       this.dragging = "spline"; this.dragMoved = false; this.controls.enabled = false;
       this.dragStartScreen = { x: e.clientX, y: e.clientY };
       this.beginEdit(tileIndex);
-      // Splajn se kreslí v absolutní výšce s.z (bez terénu) – rovina tažení taky.
+      // Splajn se kreslí v absolutní výšce s.z (bez terénu) - rovina tažení taky.
       this.dragPlane.constant = -spline.z;
       return;
     }
@@ -1225,7 +1303,7 @@ export class Viewport {
       return;
     }
     if (!this.dragging || !this.selection || !this.currentMap) return;
-    // Práh: dokud se kurzor neposune dost daleko, ber to jako klik (ne tažení) –
+    // Práh: dokud se kurzor neposune dost daleko, ber to jako klik (ne tažení) -
     // jinak by i nepatrný pohyb při výběru označil dlaždici jako změněnou.
     if (!this.dragMoved && this.dragStartScreen) {
       const dpx = Math.hypot(e.clientX - this.dragStartScreen.x, e.clientY - this.dragStartScreen.y);
@@ -1271,7 +1349,7 @@ export class Viewport {
       this.commitEdit(); // jeden záznam historie za celé tažení
       this.onChange?.(sel);
     } else {
-      this.pendingBefore = null; // klik bez tažení – žádná editace
+      this.pendingBefore = null; // klik bez tažení - žádná editace
     }
   };
 
@@ -1411,7 +1489,7 @@ export class Viewport {
       this.roadStart = { wx, wy };
       this.roadHeading = null; // nový řetězec začíná rovně
       this.lastRoad = null;
-      this.onStatus?.("Začátek nastaven – klikni další bod. Silnice plynule zatáčí.");
+      this.onStatus?.("Začátek nastaven - klikni další bod. Silnice plynule zatáčí.");
       return;
     }
     const x0 = this.roadStart.wx, y0 = this.roadStart.wy;
@@ -1612,7 +1690,7 @@ export class Viewport {
     this.renderer.domElement.style.cursor = texPath ? "crosshair" : "";
     this.emitTool();
     if (!texPath) { this.onStatus?.("Malování povrchu ukončeno."); return; }
-    // načti texturu (relativní ke kořeni OMSI – groundtex)
+    // načti texturu (relativní ke kořeni OMSI - groundtex)
     this.paintTexture = null;
     if (this.assetSrc) {
       try {

@@ -1,6 +1,6 @@
 // Parser binárního meshe OMSI (.o3d).
 //
-// Deterministický port algoritmu z openOMSI (crate omsi-o3d) – ověřeno proti
+// Deterministický port algoritmu z openOMSI (crate omsi-o3d) - ověřeno proti
 // reálným datům (OMSI 2). Formát .o3d:
 //
 //   [0..1]  magie 0x84 0x19
@@ -40,7 +40,7 @@ export interface O3DMesh {
   triangleCount: number;
 }
 
-/** Míchací bajt z (ještě scramblované) pozice vrcholu – krmí stav dalšího vrcholu. */
+/** Míchací bajt z (ještě scramblované) pozice vrcholu - krmí stav dalšího vrcholu. */
 function fracByte(x: number, y: number, z: number): number {
   const f = (v: number) => v - Math.trunc(v);
   const prod = Math.abs(f(x) * f(y) * f(z)) * 600.0;

@@ -144,7 +144,7 @@ export class StartMenu {
   }
 
   private renderPath() {
-    this.rootPathEl.textContent = this.omsiRoot || "Nenalezeno – nastav cestu ručně.";
+    this.rootPathEl.textContent = this.omsiRoot || "Nenalezeno - nastav cestu ručně.";
     this.rootPathEl.classList.toggle("missing", !this.omsiRoot);
   }
 

@@ -62,6 +62,10 @@ interface OmsiAPI {
     omsiRoot: string | null,
     kind: AssetKind
   ) => Promise<{ rels?: string[]; canceled?: boolean; error?: string }>;
+  addTileEntries?: (
+    rootPath: string,
+    entries: { tileX: number; tileY: number; fileName: string }[]
+  ) => Promise<{ ok?: boolean; error?: string }>;
   getVersion?: () => Promise<string>;
   checkUpdate?: () => Promise<{ ok: boolean; message?: string }>;
   installUpdate?: () => Promise<{ ok: boolean }>;
@@ -137,7 +141,7 @@ export async function getAppVersion(): Promise<string> {
  * Neznámý tvar vrací beze změny.
  */
 export function formatVersion(v: string): string {
-  if (!v) return "—";
+  if (!v) return "-";
   const m = v.match(/^(\d+\.\d+\.\d+)-(alpha|beta|rc)(?:\.\d+)?$/i);
   if (!m) return v;
   const suffix: Record<string, string> = { alpha: "a", beta: "b", rc: "rc" };
@@ -259,7 +263,7 @@ export async function loadFromDirectoryHandle(
   const tileTexts = new Map<string, string>();
   const terrains = new Map<string, ArrayBuffer>();
 
-  // @ts-expect-error – .entries() je async iterable, ne vždy v lib.d.ts
+  // @ts-expect-error - .entries() je async iterable, ne vždy v lib.d.ts
   for await (const [name, handle] of dir.entries()) {
     if (handle.kind !== "file") continue;
     const lower = name.toLowerCase();
@@ -273,7 +277,7 @@ export async function loadFromDirectoryHandle(
     }
   }
   if (!globalText) {
-    throw new Error("Ve složce není global.cfg – nevypadá to jako mapa OMSI 2.");
+    throw new Error("Ve složce není global.cfg - nevypadá to jako mapa OMSI 2.");
   }
   return buildMap(dir.name, globalText, tileTexts, "", terrains);
 }
@@ -408,6 +412,38 @@ export function createAssetSource(map: OmsiMap): AssetSource | null {
   };
 }
 
+/** Doplní záznamy [map] na konec global.cfg přes File System Access handle
+ *  (prohlížeč). Zachová existující bajty i kódování (append-only). */
+async function appendTileEntriesToHandle(
+  dir: FileSystemDirectoryHandle,
+  entries: { tileX: number; tileY: number; fileName: string }[]
+): Promise<void> {
+  const fh = await dir.getFileHandle("global.cfg", { create: false });
+  const file = await fh.getFile();
+  const buf = new Uint8Array(await file.arrayBuffer());
+  const isUtf16 = buf[0] === 0xff && buf[1] === 0xfe;
+  const isUtf8Bom = buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf;
+  const addText = "\r\n" + entries.map((e) => `[map]\r\n${e.tileX}\r\n${e.tileY}\r\n${e.fileName}`).join("\r\n") + "\r\n";
+  let addBytes: Uint8Array;
+  if (isUtf16) {
+    addBytes = new Uint8Array(addText.length * 2);
+    for (let i = 0; i < addText.length; i++) {
+      const c = addText.charCodeAt(i);
+      addBytes[i * 2] = c & 0xff; addBytes[i * 2 + 1] = (c >> 8) & 0xff;
+    }
+  } else if (isUtf8Bom) {
+    addBytes = new TextEncoder().encode(addText);
+  } else {
+    addBytes = new Uint8Array(addText.length);
+    for (let i = 0; i < addText.length; i++) addBytes[i] = addText.charCodeAt(i) & 0xff;
+  }
+  const out = new Uint8Array(buf.length + addBytes.length);
+  out.set(buf, 0); out.set(addBytes, buf.length);
+  const w = await fh.createWritable();
+  await w.write(new Blob([out as BlobPart]));
+  await w.close();
+}
+
 /** Uloží všechny „dirty" dlaždice zpět na disk. Vrátí počet uložených. */
 export async function saveMap(map: OmsiMap): Promise<number> {
   const dirty = map.tiles.filter((t) => t.dirty);
@@ -418,10 +454,15 @@ export async function saveMap(map: OmsiMap): Promise<number> {
     content: serializeTile(t),
   }));
 
-  // Terén dirty dlaždic (úprava výšky) – binární *.terrain vedle *.map.
+  // Terén dirty dlaždic (úprava výšky) - binární *.terrain vedle *.map.
   const terrains = dirty
     .filter((t) => t.terrain)
     .map((t) => ({ fileName: t.fileName + ".terrain", data: serializeTerrain(t.terrain!) }));
+
+  // Nové dlaždice (přidané v editoru) je třeba doplnit do global.cfg.
+  const newTiles = dirty
+    .filter((t) => t.isNew)
+    .map((t) => ({ tileX: t.tileX, tileY: t.tileY, fileName: t.fileName }));
 
   if (window.omsiAPI?.isElectron) {
     const res = await window.omsiAPI.saveTiles(map.rootPath, payload);
@@ -430,26 +471,31 @@ export async function saveMap(map: OmsiMap): Promise<number> {
       const tr = await window.omsiAPI.saveTerrains(map.rootPath, terrains);
       if (tr.error) throw new Error(tr.error);
     }
-    dirty.forEach((t) => (t.dirty = false));
+    if (newTiles.length && window.omsiAPI.addTileEntries) {
+      const ae = await window.omsiAPI.addTileEntries(map.rootPath, newTiles);
+      if (ae.error) throw new Error(ae.error);
+    }
+    dirty.forEach((t) => { t.dirty = false; t.isNew = false; });
     return res.saved ?? dirty.length;
   }
 
   if (dirHandle) {
     for (const p of payload) {
-      const fh = await dirHandle.getFileHandle(p.fileName, { create: false });
+      const fh = await dirHandle.getFileHandle(p.fileName, { create: true });
       const w = await fh.createWritable();
       await w.write(new Blob([encodeOmsiUtf16(p.content) as BlobPart]));
       await w.close();
     }
     for (const tr of terrains) {
-      const fh = await dirHandle.getFileHandle(tr.fileName, { create: false });
+      const fh = await dirHandle.getFileHandle(tr.fileName, { create: true });
       const w = await fh.createWritable();
       await w.write(new Blob([tr.data as BlobPart]));
       await w.close();
     }
-    dirty.forEach((t) => (t.dirty = false));
+    if (newTiles.length) await appendTileEntriesToHandle(dirHandle, newTiles);
+    dirty.forEach((t) => { t.dirty = false; t.isNew = false; });
     return payload.length;
   }
 
-  throw new Error("Není kam uložit – otevři mapu tlačítkem Otevřít mapu (desktop build).");
+  throw new Error("Není kam uložit - otevři mapu tlačítkem Otevřít mapu (desktop build).");
 }

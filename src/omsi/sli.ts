@@ -1,25 +1,25 @@
 import { parseOmsiConfig, num } from "./parser";
 
 /**
- * Parser OMSI spline definic (*.sli) – příčný profil silnice/koleje/chodníku.
+ * Parser OMSI spline definic (*.sli) - příčný profil silnice/koleje/chodníku.
  *
  * Formát (ověřeno na reálných .sli v OMSI 2, mj. Ruede\rail_concrete_01.sli,
  * který obsahuje původní německou dokumentaci formátu):
  *
- *   [texture]        – jméno textury; pořadí určuje 0-based index.
- *   [profile]        – začíná nový extrudovaný pás; jediná hodnota = index textury.
- *   [profilepnt]     – jeden bod příčného profilu, 4 hodnoty:
+ *   [texture]        - jméno textury; pořadí určuje 0-based index.
+ *   [profile]        - začíná nový extrudovaný pás; jediná hodnota = index textury.
+ *   [profilepnt]     - jeden bod příčného profilu, 4 hodnoty:
  *                        1) x  = příčná poloha (vpravo kladně), metry
  *                        2) z  = výška nad osou splajnu, metry
  *                        3) U  = texturová souřadnice napříč profilem
  *                        4) sklon V = 1/m (0.2 → V=1 po 5 m podél splajnu); V začíná na 0
- *   [onlyeditor]     – pomocný spline (neviditelný ve hře), např. invis_sidewalk.
+ *   [onlyeditor]     - pomocný spline (neviditelný ve hře), např. invis_sidewalk.
  *
  * Body profilu MUSÍ jít zleva doprava (kvůli správným normálám / viditelnosti
  * horní strany). Extruze profilu podél křivky splajnu dává výsledný mesh.
  *
  * Sekce [heightprofile], [length], [halfcantwidth], [path] se týkají navázání
- * na terén, převýšení v obloucích a jízdních drah (AI) – pro grafický mesh je
+ * na terén, převýšení v obloucích a jízdních drah (AI) - pro grafický mesh je
  * zatím nepotřebujeme a ignorujeme je.
  */
 
@@ -88,7 +88,7 @@ export function parseSli(text: string): SliDef {
         x: num(String(nums[0])),
         z: num(String(nums[1])),
         u: nums.length >= 3 ? nums[2] : 0,
-        // Sklon V může u posledního bodu chybět – zdědíme ho z předchozího bodu.
+        // Sklon V může u posledního bodu chybět - zdědíme ho z předchozího bodu.
         vSlope: nums.length >= 4 ? nums[3] : prev?.vSlope ?? 0,
       });
     } else if (name === "onlyeditor") {

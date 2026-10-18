@@ -1,7 +1,7 @@
 import type { OmsiMap, MapTile } from "./types";
 import { parseTile } from "./map";
 
-// Syntetická demo mapa – generuje reálný .map text a parsuje ho stejným
+// Syntetická demo mapa - generuje reálný .map text a parsuje ho stejným
 // pipeline jako skutečná mapa, takže funguje i editace a serializace.
 
 function demoTileText(tileX: number, tileY: number): string {
