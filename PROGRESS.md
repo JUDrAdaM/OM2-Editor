@@ -2,6 +2,28 @@
 
 See `AUDIT.md` for the full defect list and root-cause evidence.
 
+## Session 2026-10-18 (undo / redo)
+
+Added undo/redo — a core editing capability the editor was missing (move,
+rotate, duplicate, delete, place had no way back).
+
+- **Snapshot-based history** (`viewport.ts`): the tile's `sections` are the
+  source of truth, so each edit brackets `beginEdit(tileIndex)` (deep-copy
+  sections before) / `commitEdit()` (deep-copy after → push a record). Undo/redo
+  restore the before/after sections, `deriveTile` re-derives the view, and the
+  scene rebuilds. A drag is one record (begin on pointer-down, commit on
+  pointer-up when moved; a click with no move discards the pending snapshot).
+  No-op edits are skipped; history is capped at 100 and cleared on map load.
+- Wired into every mutation (field edits, rotate, delete, duplicate, place,
+  drag) and bound to **Ctrl+Z** (undo) / **Ctrl+Y** or **Ctrl+Shift+Z** (redo)
+  in `app.ts`, with status messages; hint bar updated.
+- **Verified in-browser (Grundorf):** rotate 159.84→174.84→undo→159.84→
+  redo→174.84; drag X 56.863→103.722→undo→56.863 (whole drag = one step);
+  delete→undo restores the object with its original id (5456). No JS errors,
+  build clean.
+
+---
+
 ## Session 2026-10-17 (terrain lightmaps — baked shading)
 
 Added OMSI's **baked terrain lightmaps** (`<map>/tile_X_Y.map.LM.bmp`, a 256×256

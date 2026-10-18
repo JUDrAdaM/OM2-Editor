@@ -101,7 +101,7 @@ export class EditorApp {
 
     const statusbar = el("footer", "statusbar");
     this.statusEl = el("div", "status", "Připraveno.");
-    const help = el("div", "help", "táhni = posun · klik = výběr · R = rotace · Del = smazat · Ctrl+D = duplikovat · Ctrl+S = uložit · Esc = zrušit");
+    const help = el("div", "help", "táhni = posun · klik = výběr · R = rotace · Del = smazat · Ctrl+D = duplikovat · Ctrl+Z/Y = zpět/vpřed · Ctrl+S = uložit · Esc = zrušit");
     statusbar.append(this.statusEl, el("div", "spacer"), help);
 
     editor.append(toolbar, body, statusbar);
@@ -401,6 +401,16 @@ export class EditorApp {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
       e.preventDefault();
       this.handleSave();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
+      e.preventDefault();
+      this.setStatus(this.viewport.undo() ? "Vráceno zpět (Ctrl+Z)." : "Není co vrátit.");
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey))) {
+      e.preventDefault();
+      this.setStatus(this.viewport.redo() ? "Znovu provedeno (Ctrl+Y)." : "Není co znovu provést.");
       return;
     }
     if (e.key === "Escape") {

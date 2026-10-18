@@ -1,10 +1,10 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { TILE_SIZE } from "../omsi/types";
-import type { OmsiMap, MapObject, MapSpline, MapTile, SplineAttachment, AttachObject } from "../omsi/types";
+import type { OmsiMap, MapObject, MapSpline, MapTile, SplineAttachment, AttachObject, OmsiSection } from "../omsi/types";
 import {
   setObjectField, setSplineField, deleteObject, deleteSpline,
-  duplicateObject, createObject, findTemplateObject, maxId,
+  duplicateObject, createObject, findTemplateObject, maxId, deriveTile,
 } from "../omsi/map";
 import { terrainHeightAt } from "../omsi/terrain";
 import { ModelCache, decodeTexture } from "./models";
@@ -70,6 +70,14 @@ export class Viewport {
 
   private dragging: "object" | "spline" | null = null;
   private dragMoved = false;
+
+  // Historie úprav (undo/redo): snapshot sekcí dotčené dlaždice před/po editaci.
+  // Sekce jsou zdroj pravdy, takže obnovení + deriveTile + build vrátí přesný stav.
+  private undoStack: { tileIndex: number; before: OmsiSection[]; after: OmsiSection[] }[] = [];
+  private redoStack: { tileIndex: number; before: OmsiSection[]; after: OmsiSection[] }[] = [];
+  private pendingBefore: { tileIndex: number; sections: OmsiSection[] } | null = null;
+  /** Oznámí UI změnu dostupnosti undo/redo. */
+  onHistory?: () => void;
   private readonly dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private placePath: string | null = null;
 
@@ -278,6 +286,7 @@ export class Viewport {
 
   setMap(map: OmsiMap) {
     this.currentMap = map;
+    this.clearHistory();
     this.clearSelection(false);
     this.loadedModels.clear();
     this.loadedSplines.clear();
@@ -837,6 +846,7 @@ export class Viewport {
       this.selectObject(objHit.tileIndex, objHit.objectIndex, object);
       const t = this.currentMap.tiles[objHit.tileIndex];
       this.dragging = "object"; this.dragMoved = false; this.controls.enabled = false;
+      this.beginEdit(objHit.tileIndex);
       this.dragPlane.constant = -(this.objBaseY(t, object) + OBJ_H);
       return;
     }
@@ -847,6 +857,7 @@ export class Viewport {
       const spline = this.currentMap.tiles[tileIndex].splines[splineIndex];
       this.selectSpline(tileIndex, splineIndex, spline);
       this.dragging = "spline"; this.dragMoved = false; this.controls.enabled = false;
+      this.beginEdit(tileIndex);
       // Splajn se kreslí v absolutní výšce s.z (bez terénu) – rovina tažení taky.
       this.dragPlane.constant = -spline.z;
       return;
@@ -891,7 +902,10 @@ export class Viewport {
         this.updateSplineMesh(sel.tileIndex, sel.splineIndex);
       }
       this.restoreSelectionVisual();
+      this.commitEdit(); // jeden záznam historie za celé tažení
       this.onChange?.(sel);
+    } else {
+      this.pendingBefore = null; // klik bez tažení – žádná editace
     }
   };
 
@@ -909,10 +923,12 @@ export class Viewport {
     const lx = round3(point.x - tileX * TILE_SIZE), ly = round3(-point.z - tileY * TILE_SIZE);
     const tmpl = findTemplateObject(this.currentMap, this.placePath);
     const templateSection = tmpl ? tmpl.tile.sections[tmpl.obj.sectionIndex] : undefined;
+    this.beginEdit(tileIndex);
     const newObj = createObject(t, this.placePath, maxId(this.currentMap) + 1, lx, ly, 0, templateSection);
     const objectIndex = t.objects.indexOf(newObj);
     this.placePath = null; this.renderer.domElement.style.cursor = "";
     this.build();
+    this.commitEdit();
     this.selectObject(tileIndex, objectIndex, newObj);
     this.onStatus?.("Objekt přidán.");
     this.onChange?.(this.selection);
@@ -993,19 +1009,83 @@ export class Viewport {
     this.camera.position.set(p.x + 40, p.y + 55, p.z + 40);
   }
 
+  // ---------- Undo / redo ----------
+
+  private cloneSections(t: MapTile): OmsiSection[] {
+    return t.sections.map((s) => ({ name: s.name, values: [...s.values] }));
+  }
+  /** Zahájí editaci dlaždice: uloží její sekce PŘED změnou (jen jednou do commitu). */
+  private beginEdit(tileIndex: number) {
+    if (!this.currentMap) return;
+    if (this.pendingBefore) return; // už probíhá (např. během dragu)
+    this.pendingBefore = { tileIndex, sections: this.cloneSections(this.currentMap.tiles[tileIndex]) };
+  }
+  /** Dokončí editaci: uloží sekce PO změně a vytvoří záznam historie. */
+  private commitEdit() {
+    if (!this.pendingBefore || !this.currentMap) return;
+    const { tileIndex, sections: before } = this.pendingBefore;
+    this.pendingBefore = null;
+    const after = this.cloneSections(this.currentMap.tiles[tileIndex]);
+    // Přeskoč no-op (sekce se nezměnily).
+    if (before.length === after.length &&
+        before.every((s, i) => s.name === after[i].name && s.values.join("\u0001") === after[i].values.join("\u0001"))) {
+      return;
+    }
+    this.undoStack.push({ tileIndex, before, after });
+    if (this.undoStack.length > 100) this.undoStack.shift();
+    this.redoStack = [];
+    this.onHistory?.();
+  }
+  private applySnapshot(tileIndex: number, sections: OmsiSection[]) {
+    if (!this.currentMap) return;
+    const t = this.currentMap.tiles[tileIndex];
+    t.sections = sections.map((s) => ({ name: s.name, values: [...s.values] }));
+    t.dirty = true;
+    deriveTile(t); // přepočítá odvozený pohled (objekty/splajny/…) z obnovených sekcí
+    this.clearSelection(false); // indexy výběru mohou být po obnově neplatné
+    this.build();
+    this.onSelect?.(null);
+    this.onChange?.(null);
+    this.onHistory?.();
+  }
+  canUndo(): boolean { return this.undoStack.length > 0; }
+  canRedo(): boolean { return this.redoStack.length > 0; }
+  undo(): boolean {
+    const rec = this.undoStack.pop();
+    if (!rec) return false;
+    this.applySnapshot(rec.tileIndex, rec.before);
+    this.redoStack.push(rec);
+    return true;
+  }
+  redo(): boolean {
+    const rec = this.redoStack.pop();
+    if (!rec) return false;
+    this.applySnapshot(rec.tileIndex, rec.after);
+    this.undoStack.push(rec);
+    return true;
+  }
+  private clearHistory() {
+    this.undoStack = []; this.redoStack = []; this.pendingBefore = null;
+    this.onHistory?.();
+  }
+
   setSelectedObjectField(field: ObjField, value: number) {
     if (this.selection?.kind !== "object" || !this.currentMap) return;
+    if (!this.dragging) this.beginEdit(this.selection.tileIndex);
     setObjectField(this.currentMap.tiles[this.selection.tileIndex], this.selection.object, field, value);
     // Cílený přesun instance; jen pokud objekt není instancovaný (box), přestav vše.
     if (!this.updateObjectInstance(this.selection.tileIndex, this.selection.objectIndex)) this.build();
     this.restoreSelectionVisual();
+    if (!this.dragging) this.commitEdit();
     this.onChange?.(this.selection);
   }
   setSelectedSplineField(field: SplField, value: number) {
     if (this.selection?.kind !== "spline" || !this.currentMap) return;
+    if (!this.dragging) this.beginEdit(this.selection.tileIndex);
     setSplineField(this.currentMap.tiles[this.selection.tileIndex], this.selection.spline, field, value);
     this.updateSplineMesh(this.selection.tileIndex, this.selection.splineIndex);
     this.restoreSelectionVisual();
+    if (!this.dragging) this.commitEdit();
     this.onChange?.(this.selection);
   }
   rotateSelected(deltaDeg: number) {
@@ -1019,20 +1099,25 @@ export class Viewport {
   }
   deleteSelected(): boolean {
     if (!this.selection || !this.currentMap) return false;
-    const t = this.currentMap.tiles[this.selection.tileIndex];
+    const tileIndex = this.selection.tileIndex;
+    const t = this.currentMap.tiles[tileIndex];
+    this.beginEdit(tileIndex);
     if (this.selection.kind === "object") deleteObject(t, this.selection.object);
     else deleteSpline(t, this.selection.spline);
     this.clearSelection(false);
     this.build();
+    this.commitEdit();
     this.onSelect?.(null); this.onChange?.(null);
     return true;
   }
   duplicateSelected() {
     if (this.selection?.kind !== "object" || !this.currentMap) return;
     const tileIndex = this.selection.tileIndex, t = this.currentMap.tiles[tileIndex];
+    this.beginEdit(tileIndex);
     const newObj = duplicateObject(t, this.selection.object, maxId(this.currentMap) + 1);
     const newIndex = t.objects.indexOf(newObj);
     this.build();
+    this.commitEdit();
     this.selectObject(tileIndex, newIndex, newObj);
     this.onChange?.(this.selection);
   }
