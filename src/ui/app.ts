@@ -101,7 +101,7 @@ export class EditorApp {
 
     const statusbar = el("footer", "statusbar");
     this.statusEl = el("div", "status", "Připraveno.");
-    const help = el("div", "help", "táhni = posun · klik = výběr · R = rotace · Del = smazat · Ctrl+D = duplikovat · Ctrl+Z/Y = zpět/vpřed · Ctrl+S = uložit · Esc = zrušit");
+    const help = el("div", "help", "táhni = posun · šipky = jemný posun (Shift větší) · klik = výběr · R = rotace · Del = smazat · Ctrl+D = duplikovat · Ctrl+Z/Y = zpět/vpřed · Ctrl+S = uložit · Esc = zrušit");
     statusbar.append(this.statusEl, el("div", "spacer"), help);
 
     editor.append(toolbar, body, statusbar);
@@ -428,6 +428,15 @@ export class EditorApp {
       }
     } else if (e.key === "r") {
       this.viewport.rotateSelected(e.shiftKey ? -15 : 15);
+    } else if (e.key.startsWith("Arrow") && this.viewport.getSelection()) {
+      // Jemný posun vybraného prvku; Shift = větší krok.
+      const step = e.shiftKey ? 5 : 0.5;
+      const d: Record<string, [number, number]> = {
+        ArrowRight: [step, 0], ArrowLeft: [-step, 0],
+        ArrowUp: [0, step], ArrowDown: [0, -step],
+      };
+      const nd = d[e.key];
+      if (nd) { e.preventDefault(); this.viewport.nudgeSelected(nd[0], nd[1]); }
     }
   };
 

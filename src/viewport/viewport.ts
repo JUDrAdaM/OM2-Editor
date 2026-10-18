@@ -1088,6 +1088,19 @@ export class Viewport {
     if (!this.dragging) this.commitEdit();
     this.onChange?.(this.selection);
   }
+  /** Jemný posun výběru o (dx,dy) v lokálních metrech dlaždice (šipky). Jen jedna
+   *  osa je nenulová → jeden záznam historie na stisk. */
+  nudgeSelected(dx: number, dy: number) {
+    const sel = this.selection;
+    if (!sel) return;
+    if (sel.kind === "object") {
+      if (dx) this.setSelectedObjectField("x", round3(sel.object.x + dx));
+      if (dy) this.setSelectedObjectField("y", round3(sel.object.y + dy));
+    } else {
+      if (dx) this.setSelectedSplineField("x", round3(sel.spline.x + dx));
+      if (dy) this.setSelectedSplineField("y", round3(sel.spline.y + dy));
+    }
+  }
   rotateSelected(deltaDeg: number) {
     if (this.selection?.kind === "object") {
       let r = (this.selection.object.rotZ + deltaDeg) % 360; if (r < 0) r += 360;

@@ -2,6 +2,17 @@
 
 See `AUDIT.md` for the full defect list and root-cause evidence.
 
+## Session 2026-10-18 (arrow-key nudge)
+
+Fine positioning for the selected object/spline: **arrow keys** move it in
+tile-local metres (0.5 m, or 5 m with **Shift**). `viewport.nudgeSelected(dx,dy)`
+routes through the existing field setters, so each press is one undo step and
+only the touched axis changes. Bound in `app.ts` (guarded by `inField` so it
+doesn't fight inspector inputs); hint bar updated. Verified in-browser: X
+160.732 →(→)→ 161.232 →(Shift+←)→ 156.232 →(Ctrl+Z)→ 161.232. Build clean.
+
+---
+
 ## Session 2026-10-18 (undo / redo)
 
 Added undo/redo — a core editing capability the editor was missing (move,
