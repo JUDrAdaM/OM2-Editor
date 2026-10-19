@@ -90,9 +90,11 @@ export class Viewport {
    *  aby pouhý klik mikro-posunem označil dlaždici jako změněnou). */
   private dragStartScreen: { x: number; y: number } | null = null;
   private static readonly DRAG_THRESHOLD_PX = 3;
-  /** Vzdálenost kamery (m), do níž se splajny dlaždice kreslí detailně; dál jen
-   *  zjednodušená osová čára (LOD) - kvůli plynulému overview velkých map. */
-  private static readonly LOD_DETAIL_DIST = 1400;
+  /** 3D vzdálenost kamery (m), do níž se splajny dlaždice kreslí detailně; dál
+   *  jen zjednodušená osová čára (LOD). Zvolena tak, aby běžná editace i přehled
+   *  malé/střední mapy zůstaly detailní a LOD naskočil u vzdáleného pohledu přes
+   *  velkou mapu. */
+  private static readonly LOD_DETAIL_DIST = 3000;
 
   // Historie úprav (undo/redo): snapshot sekcí dotčené dlaždice před/po editaci.
   // Sekce jsou zdroj pravdy, takže obnovení + deriveTile + build vrátí přesný stav.
@@ -636,8 +638,13 @@ export class Viewport {
       tg.group.visible = v;
       if (!v) continue;
       visible++;
-      const cdx = tg.sphere.center.x - camPos.x, cdz = tg.sphere.center.z - camPos.z;
-      const detail = cdx * cdx + cdz * cdz <= lodDist2;
+      // 3D vzdálenost (vč. výšky kamery): při pohledu shora je kamera vysoko →
+      // velká vzdálenost → LOD; při přiblížení k editaci → detail. Malé mapy
+      // (kamera blízko) tak zůstávají plně texturované bez regrese.
+      const cdx = tg.sphere.center.x - camPos.x;
+      const cdy = tg.sphere.center.y - camPos.y;
+      const cdz = tg.sphere.center.z - camPos.z;
+      const detail = cdx * cdx + cdy * cdy + cdz * cdz <= lodDist2;
       const objs = this.tileSplineMeshes.get(ti);
       if (objs) {
         for (const o of objs) {

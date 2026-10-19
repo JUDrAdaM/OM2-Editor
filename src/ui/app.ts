@@ -97,6 +97,16 @@ export class EditorApp {
     const helpBtn = el("button", "btn btn-sm", "? Nápověda");
     helpBtn.addEventListener("click", () => openHelp());
 
+    // Přepínač vizualizace AI provozu (jízdní dráhy aut/chodců/kolejí + semafory)
+    const aiBtn = el("button", "btn btn-sm", "🚦 AI provoz");
+    aiBtn.title = "Zobrazit/skrýt AI dráhy (auta/chodci/kolej) a semafory";
+    let aiOn = false;
+    aiBtn.addEventListener("click", () => {
+      aiOn = !aiOn;
+      this.viewport.setAiTraffic(aiOn);
+      aiBtn.classList.toggle("active", aiOn);
+    });
+
     // Gizmo přepínač (posun / rotace / měřítko)
     const gizmoGroup = el("div", "gizmo-group");
     for (const g of GIZMOS) {
@@ -111,7 +121,7 @@ export class EditorApp {
     this.dirtyEl = el("div", "dirty-pill");
     this.dirtyEl.style.display = "none";
     this.statsEl = el("div", "stats", "");
-    toolbar.append(brand, menuBtn, mapPropsBtn, settingsBtn, helpBtn, gizmoGroup, el("div", "spacer"), this.statsEl, this.dirtyEl, this.mapNameEl);
+    toolbar.append(brand, menuBtn, mapPropsBtn, settingsBtn, helpBtn, aiBtn, gizmoGroup, el("div", "spacer"), this.statsEl, this.dirtyEl, this.mapNameEl);
 
     // --- Body ---
     const body = el("div", "body");
