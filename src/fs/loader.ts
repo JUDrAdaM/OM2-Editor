@@ -1,4 +1,4 @@
-import { buildMap, parseGlobalCfg, serializeTile } from "../omsi/map";
+import { buildMap, parseGlobalCfg, serializeTile, serializeGlobalCfg } from "../omsi/map";
 import type { OmsiMap, TerrainData } from "../omsi/types";
 
 /** Serializuje výškmapu dlaždice do binárního *.terrain (int32 dílky + float32 výšky LE). */
@@ -65,6 +65,17 @@ interface OmsiAPI {
   addTileEntries?: (
     rootPath: string,
     entries: { tileX: number; tileY: number; fileName: string }[]
+  ) => Promise<{ ok?: boolean; error?: string }>;
+  createMap?: (
+    omsiRoot: string | null,
+    folder: string,
+    globalText: string,
+    tiles: { fileName: string; content: string }[],
+    terrains: { fileName: string; data: Uint8Array }[]
+  ) => Promise<MapFolderResult | { error: string }>;
+  saveGlobalCfg?: (
+    rootPath: string,
+    content: string
   ) => Promise<{ ok?: boolean; error?: string }>;
   getVersion?: () => Promise<string>;
   checkUpdate?: () => Promise<{ ok: boolean; message?: string }>;
@@ -475,6 +486,56 @@ async function appendTileEntriesToHandle(
   const w = await fh.createWritable();
   await w.write(new Blob([out as BlobPart]));
   await w.close();
+}
+
+/**
+ * Vytvoří NOVOU mapu na disku pod <OMSI>/maps/<folder>: založí složku, zapíše
+ * global.cfg (UTF-16LE s BOM), všechny dlaždice (.map) a jejich terén (.terrain).
+ * Vrátí načtený model (čtený zpět z disku). Jen desktop (Electron).
+ */
+export async function createNewMapOnDisk(
+  map: OmsiMap,
+  omsiRoot: string | null,
+  folder: string
+): Promise<OmsiMap> {
+  if (!window.omsiAPI?.isElectron || !window.omsiAPI.createMap) {
+    throw new Error("Vytvoření nové mapy je dostupné jen v desktop aplikaci.");
+  }
+  const globalText = serializeGlobalCfg(map.globalSections);
+  const tiles = map.tiles.map((t) => ({ fileName: t.fileName, content: serializeTile(t) }));
+  const terrains = map.tiles
+    .filter((t) => t.terrain)
+    .map((t) => ({ fileName: t.fileName + ".terrain", data: serializeTerrain(t.terrain!) }));
+  const res = await window.omsiAPI.createMap(omsiRoot, folder, globalText, tiles, terrains);
+  if (!res) throw new Error("Mapu se nepodařilo vytvořit.");
+  if ("error" in res) throw new Error(res.error);
+  return buildFromFolderResult(res);
+}
+
+/**
+ * Uloží global.cfg (celé sekce z `map.globalSections`) na disk. Používá se po
+ * editaci vlastností mapy (friendlyname / groundtex / popis). Zápis je úplný
+ * přepis - globalSections ale drží VŠECHNY původní sekce (round-trip), takže se
+ * nic neztratí; měněné sekce upravuje `map.ts` cíleně.
+ */
+export async function saveGlobalCfg(map: OmsiMap): Promise<void> {
+  const content = serializeGlobalCfg(map.globalSections);
+  if (window.omsiAPI?.isElectron) {
+    if (!window.omsiAPI.saveGlobalCfg) {
+      throw new Error("Tato verze aplikace neumí uložit global.cfg - aktualizuj aplikaci.");
+    }
+    const res = await window.omsiAPI.saveGlobalCfg(map.rootPath, content);
+    if (res.error) throw new Error(res.error);
+    return;
+  }
+  if (dirHandle) {
+    const fh = await dirHandle.getFileHandle("global.cfg", { create: true });
+    const w = await fh.createWritable();
+    await w.write(new Blob([encodeOmsiUtf16(content) as BlobPart]));
+    await w.close();
+    return;
+  }
+  throw new Error("Není kam uložit global.cfg - otevři mapu v desktop aplikaci.");
 }
 
 /** Uloží všechny „dirty" dlaždice zpět na disk. Vrátí počet uložených. */

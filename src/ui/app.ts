@@ -7,6 +7,7 @@ import {
 import type { AssetKind } from "../fs/loader";
 import { openSettings } from "./settings";
 import { openHelp } from "./help";
+import { openMapProps } from "./mapprops";
 import { actionFromEvent } from "./keybindings";
 import { usedObjectPaths, usedSplinePaths, createTile, suggestNewTileCoords } from "../omsi/map";
 import type { OmsiMap } from "../omsi/types";
@@ -88,6 +89,9 @@ export class EditorApp {
     brand.append(el("span", "brand-mark", "◆"), el("span", "brand-name", "OM2-Editor"));
     const menuBtn = el("button", "btn btn-sm", "☰ Menu");
     menuBtn.addEventListener("click", () => this.onBackToMenu?.());
+    const mapPropsBtn = el("button", "btn btn-sm", "🗺 Mapa");
+    mapPropsBtn.title = "Vlastnosti mapy (global.cfg): název, popis, terénní textury";
+    mapPropsBtn.addEventListener("click", () => this.openMapProps());
     const settingsBtn = el("button", "btn btn-sm", "⚙ Nastavení");
     settingsBtn.addEventListener("click", () => openSettings());
     const helpBtn = el("button", "btn btn-sm", "? Nápověda");
@@ -107,7 +111,7 @@ export class EditorApp {
     this.dirtyEl = el("div", "dirty-pill");
     this.dirtyEl.style.display = "none";
     this.statsEl = el("div", "stats", "");
-    toolbar.append(brand, menuBtn, settingsBtn, helpBtn, gizmoGroup, el("div", "spacer"), this.statsEl, this.dirtyEl, this.mapNameEl);
+    toolbar.append(brand, menuBtn, mapPropsBtn, settingsBtn, helpBtn, gizmoGroup, el("div", "spacer"), this.statsEl, this.dirtyEl, this.mapNameEl);
 
     // --- Body ---
     const body = el("div", "body");
@@ -303,6 +307,19 @@ export class EditorApp {
     this.tileXInput.value = String(next.tileX);
     this.tileYInput.value = String(next.tileY);
     this.setStatus(`Přidána dlaždice [${tx}, ${ty}]. Ulož (Ctrl+S) pro zápis do mapy.`);
+  }
+
+  /** Otevře editaci vlastností mapy (global.cfg). Po uložení obnoví náhled. */
+  private openMapProps() {
+    if (!this.map) { this.setStatus("Nejprve otevři nebo vytvoř mapu.", true); return; }
+    const map = this.map;
+    openMapProps(map, () => {
+      this.mapNameEl.textContent = map.friendlyName || map.name;
+      this.viewport.reloadGround();
+      this.renderPaintPalette();
+      this.renderBaseTexList();
+      this.setStatus("Vlastnosti mapy uloženy (global.cfg).");
+    });
   }
 
   private async browseBaseTexture() {

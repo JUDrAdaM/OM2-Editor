@@ -378,10 +378,10 @@ function fmt(n: number): string {
   return s;
 }
 
-/** Serializuje dlaždici zpět na text .map (CRLF, blok mezi sekcemi). */
-export function serializeTile(tile: MapTile): string {
+/** Serializuje sekce zpět na text OMSI configu (CRLF, blok mezi sekcemi). */
+function serializeSections(sections: OmsiSection[]): string {
   const parts: string[] = [];
-  for (const s of tile.sections) {
+  for (const s of sections) {
     if (s.name === "__header__") {
       parts.push(s.values.join("\r\n"));
     } else {
@@ -389,6 +389,16 @@ export function serializeTile(tile: MapTile): string {
     }
   }
   return parts.join("\r\n\r\n") + "\r\n";
+}
+
+/** Serializuje dlaždici zpět na text .map (CRLF, blok mezi sekcemi). */
+export function serializeTile(tile: MapTile): string {
+  return serializeSections(tile.sections);
+}
+
+/** Serializuje global.cfg (globalSections) zpět na text (CRLF). */
+export function serializeGlobalCfg(sections: OmsiSection[]): string {
+  return serializeSections(sections);
 }
 
 // ---------- Editace ----------
@@ -637,9 +647,15 @@ export function createTile(map: OmsiMap, tileX: number, tileY: number, baseHeigh
     ? template.sections
         .filter((s) => !CONTENT.has(s.name.toLowerCase()))
         .map((s) => ({ name: s.name, values: [...s.values] }))
-    : [
-        { name: "__header__", values: ["[OMSI-map]", ""] },
-        { name: "version", values: ["0.3"] },
+    : // Prázdná dlaždice bez vzoru (nová mapa): kostra přesně jako .map z OMSI-Editoru
+      // (ověřeno na Grundorf/tile_0_0.map) - hlavička, [version] 14 a prázdné
+      // terénní sekce. Bez nich OMSI dlaždici nenačte.
+      [
+        { name: "__header__", values: ["File created with OM2-Editor"] },
+        { name: "version", values: ["14"] },
+        { name: "terrain", values: [] },
+        { name: "variable_terrainlightmap", values: [] },
+        { name: "variable_terrain", values: [] },
       ];
 
   // Unikátní jméno souboru dlaždice.
@@ -682,6 +698,166 @@ export function setSplineNext(tile: MapTile, spline: MapSpline, nextId: number):
   while (section.values.length <= idx) section.values.push("0");
   section.values[idx] = String(nextId);
   tile.dirty = true;
+}
+
+// ---------- Nová mapa + editace global.cfg ----------
+
+/** Výchozí základní textura terénu (tráva) - existuje v každé instalaci OMSI 2. */
+export const DEFAULT_GROUND_MAIN = "texture\\gras.bmp";
+export const DEFAULT_GROUND_DETAIL = "texture\\gras_det.bmp";
+
+export interface NewMapOptions {
+  /** Interní název mapy (sekce [name]); obvykle = název složky. */
+  name: string;
+  /** Přívětivý název zobrazený v OMSI (sekce [friendlyname]). */
+  friendlyName: string;
+  /** Popis mapy (sekce [description]); volitelné. */
+  description?: string;
+  /** Základní / detailní textura terénu (sekce [groundtex]). */
+  groundMain?: string;
+  groundDetail?: string;
+}
+
+/**
+ * Vytvoří zcela novou prázdnou mapu v paměti: kompletní global.cfg sekce
+ * (hlavička, [name]/[friendlyname]/[description], [version] 14, [NextIDCode],
+ * [groundtex]) a jednu prázdnou plochou dlaždici [0,0]. Výsledek je připraven
+ * k zápisu na disk (serializeGlobalCfg + serializeTile) a k otevření v editoru.
+ */
+export function createNewMap(opts: NewMapOptions): OmsiMap {
+  const name = opts.name.trim() || "NovaMapa";
+  const friendly = opts.friendlyName.trim() || name;
+  const groundMain = (opts.groundMain || DEFAULT_GROUND_MAIN).trim();
+  const groundDetail = (opts.groundDetail || DEFAULT_GROUND_DETAIL).trim();
+  const descLines = (opts.description ?? "").length
+    ? (opts.description as string).split(/\r?\n/)
+    : [];
+
+  const globalSections: OmsiSection[] = [
+    { name: "__header__", values: ["File created with OM2-Editor"] },
+    { name: "name", values: [name] },
+    { name: "friendlyname", values: [friendly] },
+    { name: "description", values: descLines },
+    { name: "end", values: [] },
+    { name: "version", values: ["14"] },
+    { name: "NextIDCode", values: ["1"] },
+    { name: "groundtex", values: [groundMain, groundDetail, "0", "1", "60"] },
+  ];
+
+  const map: OmsiMap = {
+    name,
+    friendlyName: friendly,
+    rootName: name,
+    rootPath: "",
+    tiles: [],
+    totalTiles: 0,
+    globalSections,
+    groundTex: [{ main: groundMain, detail: groundDetail }],
+  };
+
+  // Jedna výchozí plochá dlaždice [0,0]. createTile doplní záznam [map] do
+  // globalSections a vytvoří kostru .map (bez vzoru -> OMSI tile skeleton).
+  createTile(map, 0, 0, 0);
+  map.totalTiles = map.tiles.length;
+  return map;
+}
+
+/** Index první sekce daného jména (case-insensitive), nebo -1. */
+function sectionIndex(sections: OmsiSection[], name: string): number {
+  const n = name.toLowerCase();
+  return sections.findIndex((s) => s.name.toLowerCase() === n);
+}
+
+/** Nastaví přívětivý název mapy ([friendlyname]); sekci v případě potřeby vytvoří. */
+export function setFriendlyName(map: OmsiMap, value: string): void {
+  const secs = map.globalSections;
+  const i = sectionIndex(secs, "friendlyname");
+  if (i >= 0) {
+    secs[i].values = [value];
+  } else {
+    const after = sectionIndex(secs, "name");
+    secs.splice(after >= 0 ? after + 1 : 0, 0, { name: "friendlyname", values: [value] });
+  }
+  map.friendlyName = value;
+}
+
+/** Nastaví interní název mapy ([name]). */
+export function setMapName(map: OmsiMap, value: string): void {
+  const secs = map.globalSections;
+  const i = sectionIndex(secs, "name");
+  if (i >= 0) secs[i].values = [value];
+  else secs.unshift({ name: "name", values: [value] });
+  map.name = value;
+}
+
+/** Vrátí popis mapy ([description]) jako víceřádkový text. */
+export function getDescription(map: OmsiMap): string {
+  const i = sectionIndex(map.globalSections, "description");
+  return i >= 0 ? map.globalSections[i].values.join("\n") : "";
+}
+
+/** Nastaví popis mapy ([description] + následné [end]); sekci vytvoří/doplní. */
+export function setDescription(map: OmsiMap, text: string): void {
+  const secs = map.globalSections;
+  const lines = text.length ? text.split(/\r?\n/) : [];
+  const i = sectionIndex(secs, "description");
+  if (i >= 0) {
+    secs[i].values = lines;
+    // OMSI uzavírá popis sekcí [end]; zajisti, že hned následuje.
+    if (!(secs[i + 1] && secs[i + 1].name.toLowerCase() === "end")) {
+      secs.splice(i + 1, 0, { name: "end", values: [] });
+    }
+  } else {
+    let at = sectionIndex(secs, "version");
+    if (at < 0) at = sectionIndex(secs, "friendlyname");
+    at = at >= 0 ? at + (sectionIndex(secs, "version") >= 0 ? 0 : 1) : secs.length;
+    secs.splice(at, 0, { name: "description", values: lines }, { name: "end", values: [] });
+  }
+}
+
+/** Jedna položka palety terénních textur z global.cfg ([groundtex]). */
+export interface GroundTexEntry {
+  main: string;
+  detail: string;
+  /** 3 koncová čísla sekce (měřítka/index); zachováváme je beze změny. */
+  nums: string[];
+}
+
+/** Vyčte paletu [groundtex] z global.cfg (pořadí = index; 0 = základní textura). */
+export function getGroundTexEntries(map: OmsiMap): GroundTexEntry[] {
+  const out: GroundTexEntry[] = [];
+  for (const s of map.globalSections) {
+    if (s.name.toLowerCase() !== "groundtex") continue;
+    const v = s.values.map((x) => x.trim());
+    out.push({
+      main: v[0] ?? "",
+      detail: v[1] ?? "",
+      nums: v.slice(2).filter((x) => x.length > 0),
+    });
+  }
+  return out;
+}
+
+/**
+ * Přepíše celou paletu [groundtex] v global.cfg zadaným seznamem (pořadí = index).
+ * Odstraní stávající [groundtex] sekce a vloží nové před první [map] záznam
+ * (ostatní sekce zůstanou beze změny). Aktualizuje i odvozené `map.groundTex`.
+ */
+export function setGroundTexEntries(map: OmsiMap, entries: GroundTexEntry[]): void {
+  const secs = map.globalSections;
+  for (let i = secs.length - 1; i >= 0; i--) {
+    if (secs[i].name.toLowerCase() === "groundtex") secs.splice(i, 1);
+  }
+  const newSecs: OmsiSection[] = entries
+    .filter((e) => e.main.trim())
+    .map((e) => ({
+      name: "groundtex",
+      values: [e.main.trim(), e.detail.trim(), ...(e.nums.length ? e.nums : ["0", "1", "60"])],
+    }));
+  let at = sectionIndex(secs, "map");
+  if (at < 0) at = secs.length;
+  secs.splice(at, 0, ...newSecs);
+  map.groundTex = newSecs.map((s) => ({ main: s.values[0], detail: s.values[1] ?? "" }));
 }
 
 /** Duplikuje objekt (klon sekce) s novým ID a posunem; vrátí nový MapObject. */

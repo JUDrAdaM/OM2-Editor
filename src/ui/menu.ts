@@ -11,6 +11,7 @@ import {
   type UpdateStatus,
 } from "../fs/loader";
 import { openSettings } from "./settings";
+import { openNewMap } from "./newmap";
 import { createDemoMap } from "../omsi/demo";
 import type { OmsiMap } from "../omsi/types";
 
@@ -88,6 +89,12 @@ export class StartMenu {
 
     // Akce
     const actions = el("div", "menu-actions");
+    const newMapBtn = el("button", "btn btn-primary", "✚ Nová mapa");
+    newMapBtn.addEventListener("click", () => this.handleNewMap());
+    if (!isElectronApp()) {
+      newMapBtn.disabled = true;
+      newMapBtn.title = "Vytvoření nové mapy je dostupné jen v desktop aplikaci.";
+    }
     const openFolderBtn = el("button", "btn", "Otevřít složku mapy…");
     openFolderBtn.addEventListener("click", () => this.handleOpenFolder());
     const demoBtn = el("button", "btn", "Demo mapa");
@@ -96,7 +103,7 @@ export class StartMenu {
     );
     const refreshBtn = el("button", "btn", "Obnovit seznam");
     refreshBtn.addEventListener("click", () => this.refreshRootAndMaps());
-    actions.append(openFolderBtn, demoBtn, refreshBtn);
+    actions.append(newMapBtn, openFolderBtn, demoBtn, refreshBtn);
     card.append(actions);
 
     // Seznam map
@@ -184,6 +191,17 @@ export class StartMenu {
     } catch (err) {
       this.setStatus("Chyba načtení: " + (err as Error).message, true);
     }
+  }
+
+  private handleNewMap() {
+    if (!isElectronApp()) {
+      this.setStatus("Nová mapa je dostupná jen v desktop aplikaci.", true);
+      return;
+    }
+    openNewMap(this.omsiRoot, (map, status) => {
+      this.teardown();
+      this.onMap(map, status);
+    });
   }
 
   private async handleOpenFolder() {

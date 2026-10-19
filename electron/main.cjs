@@ -413,6 +413,56 @@ ipcMain.handle("omsi:addTileEntries", async (_e, rootPath, entries) => {
   }
 });
 
+/** Očistí název na bezpečný název složky (bez zakázaných znaků Windows). */
+function sanitizeFolder(name) {
+  return String(name || "")
+    .trim()
+    .replace(/[\\/:*?"<>|]/g, "_")
+    .replace(/[. ]+$/, "")
+    .slice(0, 80);
+}
+
+ipcMain.handle("omsi:createMap", async (_e, omsiRoot, folder, globalText, tiles, terrains) => {
+  try {
+    const root = omsiRoot || detectOmsiRoot();
+    if (!root) return { error: "OMSI 2 nenalezeno - nastav cestu v menu." };
+    const safe = sanitizeFolder(folder);
+    if (!safe) return { error: "Neplatný název složky mapy." };
+    const mapsDir = path.join(root, "maps");
+    const dirPath = path.join(mapsDir, safe);
+    if (!path.resolve(dirPath).startsWith(path.resolve(mapsDir))) {
+      return { error: "Neplatná cesta mapy." };
+    }
+    if (fssync.existsSync(dirPath)) {
+      return { error: `Složka maps\\${safe} už existuje - zvol jiný název.` };
+    }
+    await fs.mkdir(dirPath, { recursive: true });
+    // global.cfg + dlaždice: UTF-16LE s BOM (formát OMSI).
+    await fs.writeFile(path.join(dirPath, "global.cfg"), Buffer.from("﻿" + globalText, "utf16le"));
+    for (const t of tiles || []) {
+      await fs.writeFile(path.join(dirPath, t.fileName), Buffer.from("﻿" + t.content, "utf16le"));
+    }
+    for (const t of terrains || []) {
+      await fs.writeFile(path.join(dirPath, t.fileName), Buffer.from(t.data));
+    }
+    // Načti zpět z disku, ať editor dostane konzistentní model.
+    return await readMapFolder(dirPath);
+  } catch (err) {
+    return { error: String((err && err.message) || err) };
+  }
+});
+
+ipcMain.handle("omsi:saveGlobalCfg", async (_e, rootPath, content) => {
+  try {
+    if (!rootPath) return { error: "Chybí cesta ke složce mapy." };
+    const target = path.join(rootPath, "global.cfg");
+    await fs.writeFile(target, Buffer.from("﻿" + content, "utf16le"));
+    return { ok: true };
+  } catch (err) {
+    return { error: String((err && err.message) || err) };
+  }
+});
+
 ipcMain.handle("app:getVersion", async () => app.getVersion());
 
 // ---------------------------------------------------------------------------

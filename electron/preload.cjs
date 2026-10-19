@@ -25,6 +25,11 @@ contextBridge.exposeInMainWorld("omsiAPI", {
   pickAsset: (omsiRoot, kind) => ipcRenderer.invoke("omsi:pickAsset", omsiRoot, kind),
   /** Doplní záznamy [map] (nové dlaždice) na konec global.cfg. */
   addTileEntries: (rootPath, entries) => ipcRenderer.invoke("omsi:addTileEntries", rootPath, entries),
+  /** Vytvoří novou mapu pod <OMSI>/maps/<folder> (složka + global.cfg + dlaždice). */
+  createMap: (omsiRoot, folder, globalText, tiles, terrains) =>
+    ipcRenderer.invoke("omsi:createMap", omsiRoot, folder, globalText, tiles, terrains),
+  /** Přepíše global.cfg mapy (po editaci vlastností). */
+  saveGlobalCfg: (rootPath, content) => ipcRenderer.invoke("omsi:saveGlobalCfg", rootPath, content),
 
   // --- Verze + autoupdate ---
   getVersion: () => ipcRenderer.invoke("app:getVersion"),
