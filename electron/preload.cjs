@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld("omsiAPI", {
   readAsset: (omsiRoot, relPath) => ipcRenderer.invoke("omsi:readAsset", omsiRoot, relPath),
   /** Otevře dialog pro výběr souboru(ů) assetu; vrací cesty relativní ke kořeni OMSI. */
   pickAsset: (omsiRoot, kind) => ipcRenderer.invoke("omsi:pickAsset", omsiRoot, kind),
+  /** Otevře dialog pro výběr SLOŽKY; vrací všechny assety daného druhu v ní (rekurzivně). */
+  listAssetFolder: (omsiRoot, kind) => ipcRenderer.invoke("omsi:listAssetFolder", omsiRoot, kind),
   /** Doplní záznamy [map] (nové dlaždice) na konec global.cfg. */
   addTileEntries: (rootPath, entries) => ipcRenderer.invoke("omsi:addTileEntries", rootPath, entries),
   /** Vytvoří novou mapu pod <OMSI>/maps/<folder> (složka + global.cfg + dlaždice). */

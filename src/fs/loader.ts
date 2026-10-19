@@ -62,6 +62,10 @@ interface OmsiAPI {
     omsiRoot: string | null,
     kind: AssetKind
   ) => Promise<{ rels?: string[]; canceled?: boolean; error?: string }>;
+  listAssetFolder?: (
+    omsiRoot: string | null,
+    kind: AssetKind
+  ) => Promise<{ rels?: string[]; canceled?: boolean; truncated?: boolean; error?: string }>;
   addTileEntries?: (
     rootPath: string,
     entries: { tileX: number; tileY: number; fileName: string }[]
@@ -407,6 +411,50 @@ export async function pickAssetFiles(kind: AssetKind, omsiRoot: string | null): 
   const r = await window.omsiAPI.pickAsset(omsiRoot, kind);
   if (r?.error) throw new Error(r.error);
   return r?.rels ?? [];
+}
+
+/**
+ * Nechá uživatele vybrat SLOŽKU a vrátí všechny assety daného druhu v ní
+ * (rekurzivně, cesty relativní ke kořeni OMSI). Umožní „otevřít složku a vidět
+ * všechny dostupné objekty/silnice/textury" bez hledání po jednom. Prázdné pole
+ * v prohlížeči (dev náhled - nativní dialog není).
+ */
+export async function listAssetFolder(kind: AssetKind, omsiRoot: string | null): Promise<string[]> {
+  if (!window.omsiAPI?.listAssetFolder) return [];
+  const r = await window.omsiAPI.listAssetFolder(omsiRoot, kind);
+  if (r?.error) throw new Error(r.error);
+  return r?.rels ?? [];
+}
+
+// ---------------------------------------------------------------------------
+// Perzistentní seznam použitých/známých assetů (localStorage) - aby se jednou
+// vybraný objekt/silnice/textura daly příště vybrat z palety bez hledání ve
+// složkách. Nejnovější první, deduplikováno (case-insensitive), strop 500.
+// ---------------------------------------------------------------------------
+const knownKey = (kind: AssetKind) => `om2.known.${kind}.v1`;
+
+/** Vrátí uložené známé assety daného druhu (nejnovější první). */
+export function getKnownAssets(kind: AssetKind): string[] {
+  try {
+    const raw = localStorage.getItem(knownKey(kind));
+    const arr = raw ? (JSON.parse(raw) as unknown) : [];
+    return Array.isArray(arr) ? arr.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Zapamatuje si použitý asset (přesune na začátek seznamu). */
+export function addKnownAsset(kind: AssetKind, path: string): void {
+  if (!path) return;
+  try {
+    const low = path.toLowerCase();
+    const cur = getKnownAssets(kind).filter((p) => p.toLowerCase() !== low);
+    cur.unshift(path);
+    localStorage.setItem(knownKey(kind), JSON.stringify(cur.slice(0, 500)));
+  } catch {
+    /* localStorage nedostupné - ignoruj */
+  }
 }
 
 /**

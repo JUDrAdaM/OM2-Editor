@@ -389,6 +389,54 @@ ipcMain.handle("omsi:pickAsset", async (_e, omsiRoot, kind) => {
   }
 });
 
+ipcMain.handle("omsi:listAssetFolder", async (_e, omsiRoot, kind) => {
+  try {
+    const root = omsiRoot || detectOmsiRoot();
+    if (!root) return { error: "OMSI 2 nenalezeno." };
+    const spec = {
+      object: { sub: "Sceneryobjects", exts: ["sco"] },
+      spline: { sub: "Splines", exts: ["sli"] },
+      texture: { sub: "Texture", exts: ["dds", "tga", "bmp", "png", "jpg", "jpeg"] },
+    }[kind] || { sub: "", exts: ["*"] };
+    let defaultPath = path.join(root, spec.sub);
+    if (!fssync.existsSync(defaultPath)) defaultPath = root;
+    const result = await dialog.showOpenDialog(win, {
+      title: "Vyber složku s assety (zobrazí se všechny v ní)",
+      defaultPath,
+      properties: ["openDirectory"],
+    });
+    if (result.canceled || result.filePaths.length === 0) return { canceled: true };
+    const dir = result.filePaths[0];
+    const rootResolved = path.resolve(root);
+    if (!path.resolve(dir).startsWith(rootResolved)) {
+      return { error: "Složka musí být uvnitř instalace OMSI 2." };
+    }
+    const anyExt = spec.exts.includes("*");
+    const wanted = new Set(spec.exts.map((e) => "." + e.toLowerCase()));
+    const rels = [];
+    const MAX = 5000;
+    const walk = (d, depth) => {
+      if (rels.length >= MAX || depth > 6) return;
+      let ents;
+      try { ents = fssync.readdirSync(d, { withFileTypes: true }); } catch { return; }
+      for (const e of ents) {
+        if (rels.length >= MAX) break;
+        const full = path.join(d, e.name);
+        if (e.isDirectory()) walk(full, depth + 1);
+        else if (anyExt || wanted.has(path.extname(e.name).toLowerCase())) {
+          const rel = path.relative(rootResolved, full);
+          if (!rel.startsWith("..")) rels.push(rel.replace(/\//g, "\\"));
+        }
+      }
+    };
+    walk(dir, 0);
+    rels.sort((a, b) => a.localeCompare(b, "cs"));
+    return { rels, truncated: rels.length >= MAX };
+  } catch (err) {
+    return { error: String((err && err.message) || err) };
+  }
+});
+
 ipcMain.handle("omsi:addTileEntries", async (_e, rootPath, entries) => {
   try {
     if (!rootPath) return { error: "Chybí cesta ke složce mapy." };

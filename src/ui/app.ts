@@ -2,7 +2,7 @@ import { Viewport } from "../viewport/viewport";
 import type { Selection, ObjField, SplField, GizmoMode, ToolId } from "../viewport/viewport";
 import {
   openMapFolder, saveMap, createAssetSource, loadMapFromOmsiDev,
-  pickAssetFiles, omsiRootOf, isElectronApp,
+  pickAssetFiles, listAssetFolder, getKnownAssets, addKnownAsset, omsiRootOf, isElectronApp,
 } from "../fs/loader";
 import type { AssetKind } from "../fs/loader";
 import { openSettings } from "./settings";
@@ -74,7 +74,13 @@ export class EditorApp {
   private roadListEl!: HTMLElement;
   private paintListEl!: HTMLElement;
   private placeBanner!: HTMLElement;
-  private filterEl!: HTMLInputElement;
+  /** Dočasně vylistovaná složka assetů (přes „📁 Složka…") pro daný druh; null =
+   *  paleta ukazuje známé/použité assety. */
+  private folderAssets: Record<AssetKind, string[] | null> = { object: null, spline: null, texture: null };
+  /** Aktuální text filtru palety pro daný druh. */
+  private paletteFilter: Record<AssetKind, string> = { object: "", spline: "", texture: "" };
+  /** Dočasně vylistovaná složka textur pro základní texturu terénu (null = palety). */
+  private baseTexFolder: string[] | null = null;
   private objPathInput!: HTMLInputElement;
   private roadPathInput!: HTMLInputElement;
   private paintPathInput!: HTMLInputElement;
@@ -190,15 +196,17 @@ export class EditorApp {
     const objRow = el("div", "palette-add");
     this.objPathInput = el("input", "edit-input") as HTMLInputElement;
     this.objPathInput.placeholder = "Sceneryobjects\\…\\objekt.sco";
-    const objBrowse = el("button", "btn btn-sm", "Procházet…");
+    const objFolder = el("button", "btn btn-sm", "📁 Složka…");
+    objFolder.title = "Otevřít složku a zobrazit všechny objekty v ní";
+    objFolder.addEventListener("click", () => this.browseAssetFolder("object"));
+    const objBrowse = el("button", "btn btn-sm", "Soubor…");
     objBrowse.addEventListener("click", () => this.browseAsset("object"));
     const objPlace = el("button", "btn btn-sm btn-primary", "Umístit");
-    objPlace.addEventListener("click", () => { const p = this.objPathInput.value.trim(); if (p) this.viewport.setPlaceMode(p); });
-    objRow.append(this.objPathInput, objBrowse, objPlace);
+    objPlace.addEventListener("click", () => this.chooseAsset("object", this.objPathInput.value.trim()));
+    objRow.append(this.objPathInput, objFolder, objBrowse, objPlace);
     const filter = el("input", "edit-input") as HTMLInputElement;
-    filter.placeholder = "Filtr použitých objektů…";
-    filter.addEventListener("input", () => this.renderPalette(filter.value));
-    this.filterEl = filter;
+    filter.placeholder = "Filtr objektů…";
+    filter.addEventListener("input", () => { this.paletteFilter.object = filter.value; this.renderAssetPalette("object"); });
     this.placeBanner = el("div", "place-banner");
     this.placeBanner.style.display = "none";
     this.paletteListEl = el("div", "palette-list");
@@ -210,13 +218,19 @@ export class EditorApp {
     const roadRow = el("div", "palette-add");
     this.roadPathInput = el("input", "edit-input") as HTMLInputElement;
     this.roadPathInput.placeholder = "Splines\\…\\silnice.sli";
-    const roadBrowse = el("button", "btn btn-sm", "Procházet…");
+    const roadFolder = el("button", "btn btn-sm", "📁 Složka…");
+    roadFolder.title = "Otevřít složku a zobrazit všechny silnice/splajny v ní";
+    roadFolder.addEventListener("click", () => this.browseAssetFolder("spline"));
+    const roadBrowse = el("button", "btn btn-sm", "Soubor…");
     roadBrowse.addEventListener("click", () => this.browseAsset("spline"));
     const roadBtn = el("button", "btn btn-sm btn-primary", "Stavět");
-    roadBtn.addEventListener("click", () => { const p = this.roadPathInput.value.trim(); if (p) this.viewport.setRoadMode(p); });
-    roadRow.append(this.roadPathInput, roadBrowse, roadBtn);
+    roadBtn.addEventListener("click", () => this.chooseAsset("spline", this.roadPathInput.value.trim()));
+    roadRow.append(this.roadPathInput, roadFolder, roadBrowse, roadBtn);
+    const roadFilter = el("input", "edit-input") as HTMLInputElement;
+    roadFilter.placeholder = "Filtr silnic…";
+    roadFilter.addEventListener("input", () => { this.paletteFilter.spline = roadFilter.value; this.renderAssetPalette("spline"); });
     this.roadListEl = el("div", "palette-list");
-    road.append(el("div", "tool-head", "Stavba silnic"), roadRow, this.roadListEl);
+    road.append(el("div", "tool-head", "Stavba silnic"), roadRow, roadFilter, this.roadListEl);
     this.toolPanels.road = road;
 
     // Terén (štětec výšky)
@@ -250,14 +264,27 @@ export class EditorApp {
     const paintRow = el("div", "palette-add");
     this.paintPathInput = el("input", "edit-input") as HTMLInputElement;
     this.paintPathInput.placeholder = "Texture\\…\\dlazba.bmp";
-    const paintBrowse = el("button", "btn btn-sm", "Procházet…");
+    const paintFolder = el("button", "btn btn-sm", "📁 Složka…");
+    paintFolder.title = "Otevřít složku a zobrazit všechny textury v ní";
+    paintFolder.addEventListener("click", () => this.browseAssetFolder("texture"));
+    const paintBrowse = el("button", "btn btn-sm", "Soubor…");
     paintBrowse.addEventListener("click", () => this.browseAsset("texture"));
     const paintBtn = el("button", "btn btn-sm btn-primary", "Malovat");
-    paintBtn.addEventListener("click", () => { const p = this.paintPathInput.value.trim(); if (p) this.viewport.setPaintMode(p); });
-    paintRow.append(this.paintPathInput, paintBrowse, paintBtn);
+    paintBtn.addEventListener("click", () => this.chooseAsset("texture", this.paintPathInput.value.trim()));
+    paintRow.append(this.paintPathInput, paintFolder, paintBrowse, paintBtn);
+    const paintFilter = el("input", "edit-input") as HTMLInputElement;
+    paintFilter.placeholder = "Filtr textur…";
+    paintFilter.addEventListener("input", () => { this.paletteFilter.texture = paintFilter.value; this.renderAssetPalette("texture"); });
+    // Velikost kreslení (štětec) - sdílí brushRadius s terénem.
+    const pBrushRow = el("div", "slider-row");
+    const pBrush = el("input") as HTMLInputElement;
+    pBrush.type = "range"; pBrush.min = "3"; pBrush.max = "120"; pBrush.value = "25";
+    const pBrushLbl = el("span", "hint", "Velikost kreslení: 25 m");
+    pBrush.addEventListener("input", () => { this.viewport.setBrush(Number(pBrush.value)); pBrushLbl.textContent = `Velikost kreslení: ${pBrush.value} m`; });
+    pBrushRow.append(pBrushLbl, pBrush);
     this.paintListEl = el("div", "palette-list");
-    paint.append(el("div", "tool-head", "Malování povrchu"), paintRow, this.paintListEl,
-      el("div", "hint", "Malování je zatím jen v rámci relace (OMSI formát malby terénu není doložen)."));
+    paint.append(el("div", "tool-head", "Malování povrchu"), paintRow, pBrushRow, paintFilter, this.paintListEl,
+      el("div", "hint", "Vyber texturu a táhni po terénu. Malování je zatím jen v rámci relace (OMSI formát malby terénu není doložen)."));
     this.toolPanels.paint = paint;
 
     // Guma
@@ -283,11 +310,14 @@ export class EditorApp {
     const texRow = el("div", "palette-add");
     this.baseTexInput = el("input", "edit-input") as HTMLInputElement;
     this.baseTexInput.placeholder = "Texture\\…\\gras.bmp";
-    const texBrowse = el("button", "btn btn-sm", "Procházet…");
+    const texFolder = el("button", "btn btn-sm", "📁 Složka…");
+    texFolder.title = "Otevřít složku a zobrazit všechny textury v ní";
+    texFolder.addEventListener("click", () => this.browseBaseTexFolder());
+    const texBrowse = el("button", "btn btn-sm", "Soubor…");
     texBrowse.addEventListener("click", () => this.browseBaseTexture());
     const texBtn = el("button", "btn btn-sm", "Použít");
     texBtn.addEventListener("click", () => this.applyBaseTexture(this.baseTexInput.value.trim()));
-    texRow.append(this.baseTexInput, texBrowse, texBtn);
+    texRow.append(this.baseTexInput, texFolder, texBrowse, texBtn);
     const texList = el("div", "palette-list");
     texList.id = "__baseTexList";
     tile.append(texRow, texList,
@@ -326,7 +356,7 @@ export class EditorApp {
     openMapProps(map, () => {
       this.mapNameEl.textContent = map.friendlyName || map.name;
       this.viewport.reloadGround();
-      this.renderPaintPalette();
+      this.renderAssetPalette("texture");
       this.renderBaseTexList();
       this.setStatus("Vlastnosti mapy uloženy (global.cfg).");
     });
@@ -341,11 +371,25 @@ export class EditorApp {
     } catch (err) { this.setStatus("Chyba: " + (err as Error).message, true); }
   }
 
+  /** Otevře složku a zobrazí všechny textury v paletě základní textury. */
+  private async browseBaseTexFolder() {
+    if (!this.map) return;
+    if (!isElectronApp()) { this.setStatus("Otevření složky funguje v desktop aplikaci.", true); return; }
+    try {
+      const rels = await listAssetFolder("texture", omsiRootOf(this.map));
+      if (rels.length === 0) { this.setStatus("Ve zvolené složce nejsou žádné textury (nebo výběr zrušen)."); return; }
+      this.baseTexFolder = rels;
+      this.renderBaseTexList();
+      this.setStatus(`Složka: ${rels.length} textur. Klikni pro použití.`);
+    } catch (err) { this.setStatus("Chyba otevření složky: " + (err as Error).message, true); }
+  }
+
   /** Nastaví základní texturu terénu mapy (náhled; groundTex[0]). */
   private applyBaseTexture(path: string) {
     if (!this.map || !path) return;
     if (this.map.groundTex.length === 0) this.map.groundTex.push({ main: path, detail: "" });
     else this.map.groundTex[0] = { main: path, detail: this.map.groundTex[0].detail };
+    addKnownAsset("texture", path);
     this.viewport.reloadGround();
     this.renderBaseTexList();
     this.setStatus(`Základní textura: ${baseName(path)} (náhled).`);
@@ -355,16 +399,31 @@ export class EditorApp {
     const list = document.getElementById("__baseTexList");
     if (!list || !this.map) return;
     list.innerHTML = "";
+    if (this.baseTexFolder) {
+      const back = el("div", "palette-item palette-back", "← zpět na použité");
+      back.addEventListener("click", () => { this.baseTexFolder = null; this.renderBaseTexList(); });
+      list.append(back);
+      for (const p of this.baseTexFolder.slice(0, 1000)) {
+        const item = el("div", "palette-item", baseName(p));
+        item.title = p;
+        item.addEventListener("click", () => { this.baseTexInput.value = p; this.applyBaseTexture(p); });
+        list.append(item);
+      }
+      if (this.baseTexFolder.length === 0) list.append(el("div", "hint", "Ve složce nejsou textury."));
+      return;
+    }
     const seen = new Set<string>();
-    for (const g of this.map.groundTex) {
-      if (!g.main || seen.has(g.main.toLowerCase())) continue;
-      seen.add(g.main.toLowerCase());
-      const item = el("div", "palette-item", baseName(g.main));
-      item.title = g.main;
-      item.addEventListener("click", () => { this.baseTexInput.value = g.main; this.applyBaseTexture(g.main); });
+    // Textury mapy ([groundtex]) + dřív použité (perzistentně uložené).
+    const sources = [...this.map.groundTex.map((g) => g.main), ...getKnownAssets("texture")];
+    for (const tex of sources) {
+      if (!tex || seen.has(tex.toLowerCase())) continue;
+      seen.add(tex.toLowerCase());
+      const item = el("div", "palette-item", baseName(tex));
+      item.title = tex;
+      item.addEventListener("click", () => { this.baseTexInput.value = tex; this.applyBaseTexture(tex); });
       list.append(item);
     }
-    if (seen.size === 0) list.append(el("div", "hint", "Zadej cestu k textuře výše."));
+    if (seen.size === 0) list.append(el("div", "hint", "Otevři složku (📁) nebo zadej cestu výše."));
   }
 
   /** Přepne aktivní nástroj (zobrazí jeho panel + aktivuje ve viewportu). */
@@ -417,11 +476,10 @@ export class EditorApp {
     try {
       const rels = await pickAssetFiles(kind, omsiRootOf(this.map));
       if (rels.length === 0) return;
-      const first = rels[0];
-      if (kind === "object") { this.objPathInput.value = first; this.viewport.setPlaceMode(first); }
-      else if (kind === "spline") { this.roadPathInput.value = first; this.viewport.setRoadMode(first); }
-      else { this.paintPathInput.value = first; this.viewport.setPaintMode(first); }
-      this.setStatus(`Vybráno: ${baseName(first)}${rels.length > 1 ? ` (+${rels.length - 1})` : ""}`);
+      // Všechny vybrané si zapamatuj (do palety), aktivuj první.
+      for (const r of rels) addKnownAsset(kind, r);
+      this.chooseAsset(kind, rels[0]);
+      this.setStatus(`Vybráno: ${baseName(rels[0])}${rels.length > 1 ? ` (+${rels.length - 1} do palety)` : ""}`);
     } catch (err) {
       this.setStatus("Chyba výběru souboru: " + (err as Error).message, true);
     }
@@ -481,9 +539,10 @@ export class EditorApp {
     this.mapNameEl.textContent = map.friendlyName || map.name;
     this.updateStats();
     this.renderTree(map);
-    this.renderPalette("");
-    this.renderRoadPalette();
-    this.renderPaintPalette();
+    this.folderAssets = { object: null, spline: null, texture: null };
+    this.renderAssetPalette("object");
+    this.renderAssetPalette("spline");
+    this.renderAssetPalette("texture");
     this.renderInspector(null);
     this.updateDirty();
     // U velké mapy se renderuje jen shluk kolem středu (anti-crash) - dej vědět.
@@ -509,47 +568,71 @@ export class EditorApp {
 
   // ---------- Palety ----------
 
-  private renderPalette(filterText: string) {
-    this.paletteListEl.innerHTML = "";
-    if (!this.map) return;
-    const f = filterText.trim().toLowerCase();
-    const paths = usedObjectPaths(this.map).filter((p) => !f || p.toLowerCase().includes(f));
-    for (const p of paths.slice(0, 400)) {
-      const item = el("div", "palette-item", baseName(p));
-      item.title = p;
-      item.addEventListener("click", () => { this.objPathInput.value = p; this.viewport.setPlaceMode(p); });
-      this.paletteListEl.append(item);
-    }
-    if (paths.length === 0) this.paletteListEl.append(el("div", "hint", "Nic nenalezeno."));
-  }
-
-  private renderRoadPalette() {
-    this.roadListEl.innerHTML = "";
-    if (!this.map) return;
-    const paths = usedSplinePaths(this.map);
-    for (const p of paths.slice(0, 400)) {
-      const item = el("div", "palette-item", baseName(p));
-      item.title = p;
-      item.addEventListener("click", () => { this.roadPathInput.value = p; this.viewport.setRoadMode(p); });
-      this.roadListEl.append(item);
-    }
-    if (paths.length === 0) this.roadListEl.append(el("div", "hint", "Žádné silnice v mapě."));
-  }
-
-  private renderPaintPalette() {
-    this.paintListEl.innerHTML = "";
-    if (!this.map) return;
+  /** Prvky palety pro daný druh: buď vylistovaná složka, nebo známé+použité. */
+  private paletteSource(kind: AssetKind): { folder: boolean; items: string[] } {
+    const folder = this.folderAssets[kind];
+    if (folder) return { folder: true, items: folder };
+    const used = !this.map ? []
+      : kind === "object" ? usedObjectPaths(this.map)
+      : kind === "spline" ? usedSplinePaths(this.map)
+      : this.map.groundTex.map((g) => g.main).filter((m): m is string => !!m);
+    // Známé (uložené) nejdřív, pak použité v mapě; deduplikace case-insensitive.
+    const merged: string[] = [];
     const seen = new Set<string>();
-    for (const g of this.map.groundTex) {
-      const tex = g.main;
-      if (!tex || seen.has(tex.toLowerCase())) continue;
-      seen.add(tex.toLowerCase());
-      const item = el("div", "palette-item", baseName(tex));
-      item.title = tex;
-      item.addEventListener("click", () => { this.paintPathInput.value = tex; this.viewport.setPaintMode(tex); });
-      this.paintListEl.append(item);
+    for (const p of [...getKnownAssets(kind), ...used]) {
+      const k = p.toLowerCase();
+      if (!seen.has(k)) { seen.add(k); merged.push(p); }
     }
-    if (seen.size === 0) this.paintListEl.append(el("div", "hint", "Zadej cestu k textuře výše."));
+    return { folder: false, items: merged };
+  }
+
+  /** Vybere asset (vyplní vstup, aktivuje nástroj) a zapamatuje si ho do palety. */
+  private chooseAsset(kind: AssetKind, path: string): void {
+    if (!path) return;
+    addKnownAsset(kind, path);
+    if (kind === "object") { this.objPathInput.value = path; this.viewport.setPlaceMode(path); }
+    else if (kind === "spline") { this.roadPathInput.value = path; this.viewport.setRoadMode(path); }
+    else { this.paintPathInput.value = path; this.viewport.setPaintMode(path); }
+    this.renderAssetPalette(kind);
+  }
+
+  /** Vykreslí paletu daného druhu (složka nebo známé/použité) s filtrem. */
+  private renderAssetPalette(kind: AssetKind): void {
+    const listEl = kind === "object" ? this.paletteListEl : kind === "spline" ? this.roadListEl : this.paintListEl;
+    listEl.innerHTML = "";
+    if (!this.map) return;
+    const { folder, items } = this.paletteSource(kind);
+    const f = this.paletteFilter[kind].trim().toLowerCase();
+    const filtered = f ? items.filter((p) => p.toLowerCase().includes(f) || baseName(p).toLowerCase().includes(f)) : items;
+    if (folder) {
+      const back = el("div", "palette-item palette-back", "← zpět na použité");
+      back.addEventListener("click", () => { this.folderAssets[kind] = null; this.renderAssetPalette(kind); });
+      listEl.append(back);
+    }
+    for (const p of filtered.slice(0, 1000)) {
+      const item = el("div", "palette-item", baseName(p));
+      item.title = p;
+      item.addEventListener("click", () => this.chooseAsset(kind, p));
+      listEl.append(item);
+    }
+    if (filtered.length === 0) {
+      listEl.append(el("div", "hint", folder ? "Ve složce nic odpovídajícího." : "Zatím prázdné - otevři složku (📁) nebo zadej cestu výše."));
+    }
+  }
+
+  /** Otevře složku (dialog) a zobrazí všechny assety daného druhu v paletě. */
+  private async browseAssetFolder(kind: AssetKind): Promise<void> {
+    if (!this.map) return;
+    if (!isElectronApp()) { this.setStatus("Otevření složky funguje v desktop aplikaci.", true); return; }
+    try {
+      const rels = await listAssetFolder(kind, omsiRootOf(this.map));
+      if (rels.length === 0) { this.setStatus("Ve zvolené složce nejsou žádné soubory (nebo výběr zrušen)."); return; }
+      this.folderAssets[kind] = rels;
+      this.renderAssetPalette(kind);
+      this.setStatus(`Složka: ${rels.length} položek. Klikni pro výběr; výběr se uloží do palety.`);
+    } catch (err) {
+      this.setStatus("Chyba otevření složky: " + (err as Error).message, true);
+    }
   }
 
   private updatePlaceBanner() {
@@ -718,7 +801,7 @@ export class EditorApp {
     else this.renderInspector(null);
     this.updateDirty();
     this.updateStats();
-    this.renderPalette(this.filterEl?.value || "");
+    this.renderAssetPalette("object");
   }
 
   private updateDirty() {
