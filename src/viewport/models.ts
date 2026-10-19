@@ -63,6 +63,40 @@ function attachmentMatrix(ops: { op: string; vals: number[] }[]): THREE.Matrix4 
 const tgaLoader = new TGALoader();
 const ddsLoader = new DDSLoader();
 
+// Globální cache dekódovaných difuzních textur (jedna GPU textura na soubor).
+// Stejnou .bmp/.dds sdílí desítky objektů i více materiálů téhož modelu; bez
+// cache by každý vytvořil vlastní kopii ve VRAM → u velkých map dojde paměť GPU
+// a WebGL kontext spadne (černá obrazovka). Klíč = složka objektu + jméno
+// textury (tatáž dvojice se vždy vyřeší na týž soubor). clearTextureCache() se
+// volá při přepnutí mapy/kořene OMSI.
+const diffuseTexCache = new Map<string, THREE.Texture | null>();
+
+/** Vyprázdní cache textur (a uvolní GPU paměť). Volat při změně mapy/kořene. */
+export function clearTextureCache(): void {
+  for (const tex of diffuseTexCache.values()) tex?.dispose();
+  diffuseTexCache.clear();
+}
+
+/** Načte difuzní texturu objektu s deduplikací přes cache (klíč scoDir|název). */
+async function loadDiffuseTexture(src: AssetSource, scoDir: string, texName: string): Promise<THREE.Texture | null> {
+  const key = (scoDir + "|" + baseOf(texName)).toLowerCase();
+  const cached = diffuseTexCache.get(key);
+  if (cached !== undefined) return cached;
+  const found = await tryReadNamed(src, textureCandidates(scoDir, texName));
+  let tex: THREE.Texture | null = null;
+  if (found) {
+    tex = decodeTexture(found.name, found.buf);
+    if (tex) {
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = 4;
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.RepeatWrapping;
+    }
+  }
+  diffuseTexCache.set(key, tex);
+  return tex;
+}
+
 export function dirOf(p: string): string {
   const i = Math.max(p.lastIndexOf("\\"), p.lastIndexOf("/"));
   return i >= 0 ? p.slice(0, i) : "";
@@ -290,18 +324,11 @@ async function buildMaterials(src: AssetSource, scoDir: string, mesh: O3DMesh, s
     applyAlpha(mat, alpha);
 
     if (texName) {
-      const found = await tryReadNamed(src, textureCandidates(scoDir, texName));
-      if (found) {
-        const tex = decodeTexture(found.name, found.buf);
-        if (tex) {
-          tex.colorSpace = THREE.SRGBColorSpace;
-          tex.anisotropy = 4;
-          tex.wrapS = THREE.RepeatWrapping;
-          tex.wrapT = THREE.RepeatWrapping;
-          mat.map = tex;
-          mat.color.setRGB(1, 1, 1);
-          mat.needsUpdate = true;
-        }
+      const tex = await loadDiffuseTexture(src, scoDir, texName);
+      if (tex) {
+        mat.map = tex;
+        mat.color.setRGB(1, 1, 1);
+        mat.needsUpdate = true;
       }
     }
 

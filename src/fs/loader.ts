@@ -122,7 +122,10 @@ export function isElectronApp(): boolean {
 // Limit renderovaných dlaždic (anti-crash u velkých map)
 // ---------------------------------------------------------------------------
 const TILE_LIMIT_KEY = "om2.maxTiles.v1";
-/** Výchozí strop: kolik dlaždic velké mapy se načte/zobrazí (shluk kolem středu). */
+/** Výchozí strop: kolik dlaždic velké mapy se načte/zobrazí (shluk kolem středu).
+ *  Díky deduplikaci textur (sdílená GPU paměť) a sloučení instancí zvládne editor
+ *  i stovky dlaždic bez pádu; strop drží hlavně plynulost overview u hustých map.
+ *  150 je rozumný kompromis; v Nastavení lze zvýšit (ověřeno i 250 na Líšni). */
 export const DEFAULT_TILE_LIMIT = 150;
 
 /** Aktuální strop dlaždic z Nastavení (localStorage). 0 = bez limitu (vše). */

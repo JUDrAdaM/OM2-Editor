@@ -160,8 +160,9 @@ export class SettingsDialog {
     tileRow.append(tileVal);
     bodyEl.append(tileRow);
     bodyEl.append(el("div", "hint",
-      "U map nad tento počet dlaždic se zobrazí jen shluk kolem středu (jinak hrozí pád). " +
-      "0 = načíst vše. Mění se jen zobrazení; ukládají se pouze upravené dlaždice."));
+      "U map nad tento počet dlaždic se zobrazí jen shluk kolem středu. Vyšší hodnota = " +
+      "víc mapy, ale těžší overview (hustá mapa). 150 je rozumné; ověřeno i 250. Když obraz " +
+      "zčerná (málo VRAM), sniž. 0 = vše. Mění se jen zobrazení; ukládají se pouze upravené dlaždice."));
 
     // --- Sekce: Klávesové zkratky (vlastní bindy) ---
     bodyEl.append(el("div", "modal-section-title", "Klávesové zkratky"));

@@ -9,7 +9,7 @@ import {
   createSpline, findTemplateSpline, setSplineNext, setTreeOverride,
 } from "../omsi/map";
 import { terrainHeightAt } from "../omsi/terrain";
-import { ModelCache, decodeTexture, tryReadNamed, textureCandidates, dirOf } from "./models";
+import { ModelCache, decodeTexture, tryReadNamed, textureCandidates, dirOf, clearTextureCache } from "./models";
 import type { AssetSource, LoadedModel } from "./models";
 import { SplineCache, buildSplineMesh, splineCenterline, splineSampleAt } from "./splines";
 import type { LoadedSpline } from "./splines";
@@ -386,6 +386,7 @@ export class Viewport {
 
   setAssetSource(src: AssetSource | null) {
     this.assetSrc = src;
+    clearTextureCache(); // nová mapa/kořen → zahoď staré GPU textury
     this.modelCache = src ? new ModelCache(src) : null;
     this.splineCache = src ? new SplineCache(src) : null;
   }
@@ -828,6 +829,21 @@ export class Viewport {
       }
     }
 
+    // ---- Sběr objektů/attachmentů GLOBÁLNĚ (napříč dlaždicemi) ----
+    // Místo jednoho InstancedMesh na dlaždici×cestu (→ u velkých map desetitisíce
+    // draw callů → 1 FPS / ztráta WebGL kontextu → černo) sloučíme stejné modely
+    // přes CELOU načtenou mapu: jeden InstancedMesh na cestu(.sco)×díl. Terén,
+    // okraje a splajny zůstávají per-dlaždice (kvůli frustum/distance cullingu).
+    type ObjEntry = { ti: number; oi: number; o: MapObject };
+    const objByPath = new Map<string, ObjEntry[]>();
+    const boxEntries: ObjEntry[] = [];
+    const attByPath = new Map<string, THREE.Matrix4[]>();
+    const pushAtt = (path: string, m: THREE.Matrix4) => {
+      let mats = attByPath.get(path);
+      if (!mats) { mats = []; attByPath.set(path, mats); }
+      mats.push(m);
+    };
+
     for (let ti = 0; ti < map.tiles.length; ti++) {
       const t = map.tiles[ti];
       const group = new THREE.Group();
@@ -858,107 +874,28 @@ export class Viewport {
       edges.rotation.x = -Math.PI / 2; edges.position.copy(center);
       group.add(edges);
 
-      // Objekty této dlaždice seskupené podle cesty (.sco). Načtené → model, jinak box.
-      const byPath = new Map<string, { oi: number; o: MapObject }[]>();
-      const boxList: { oi: number; o: MapObject }[] = [];
+      // Objekty této dlaždice zařaď do globálních kbelíků dle cesty. Načtené →
+      // model, jinak box.
       for (let oi = 0; oi < t.objects.length; oi++) {
         const o = t.objects[oi];
         const model = this.loadedModels.get(o.path);
         const absolute = model ? model.absoluteHeight : false;
         // Objekt mimo svoji dlaždici a NEabsolutní → OMSI ho nekreslí.
         if (this.outOfTile(o) && !absolute) continue;
-        if (model) { let a = byPath.get(o.path); if (!a) { a = []; byPath.set(o.path, a); } a.push({ oi, o }); }
-        else boxList.push({ oi, o });
-      }
-      for (const [p, entries] of byPath) {
-        const model = this.loadedModels.get(p)!;
-        const isTree = !!model.treeBase;
-        for (const part of model.parts) {
-          // U stromů rozdělíme instance podle per-objektové textury (druh), jinak
-          // jedna skupina s výchozím materiálem modelu (ne-stromy beze změny).
-          type Grp = { mat: THREE.Material | THREE.Material[]; items: { oi: number; o: MapObject }[] };
-          let groups: Grp[];
-          if (isTree) {
-            const byMat = new Map<THREE.Material | THREE.Material[], { oi: number; o: MapObject }[]>();
-            for (const e of entries) {
-              const tex = this.treeTexFor(e.o);
-              const mat = tex ? this.treeMaterialFor(tex) : part.material;
-              let a = byMat.get(mat); if (!a) { a = []; byMat.set(mat, a); } a.push(e);
-            }
-            groups = [...byMat.entries()].map(([mat, items]) => ({ mat, items }));
-          } else {
-            groups = [{ mat: part.material, items: entries }];
-          }
-          for (const g of groups) {
-            const inst = new THREE.InstancedMesh(part.geometry, g.mat, g.items.length);
-            inst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-            const pmap: { tileIndex: number; objectIndex: number }[] = [];
-            g.items.forEach((e, k) => {
-              this.setObjMatrix(dummy, t, e.o, model.originRotY, model.absoluteHeight);
-              inst.setMatrixAt(k, dummy.matrix);
-              pmap.push({ tileIndex: ti, objectIndex: e.oi });
-              const key = `${ti}:${e.oi}`;
-              let arr = this.objInstances.get(key);
-              if (!arr) { arr = []; this.objInstances.set(key, arr); }
-              arr.push({ mesh: inst, k, originRotY: model.originRotY, absolute: model.absoluteHeight });
-            });
-            inst.instanceMatrix.needsUpdate = true;
-            inst.frustumCulled = false; // cullujeme na úrovni skupiny dlaždice
-            inst.userData.shared = true; // geometrie/materiál z cache - nedisposovat
-            group.add(inst);
-            this.pickables.push({ mesh: inst, map: pmap, tileIndex: ti });
-          }
-        }
-      }
-      if (boxList.length) {
-        const geo = new THREE.BoxGeometry(6, OBJ_H * 2, 6);
-        const mat = new THREE.MeshStandardMaterial({ color: 0x6f7c8f, roughness: 0.85 });
-        const inst = new THREE.InstancedMesh(geo, mat, boxList.length);
-        const pmap: { tileIndex: number; objectIndex: number }[] = [];
-        boxList.forEach((e, k) => {
-          const h = tileHeight(t, e.o.x, e.o.y);
-          dummy.position.copy(worldPos(t.tileX, t.tileY, e.o.x, e.o.y, h + e.o.z + OBJ_H));
-          dummy.rotation.set(0, THREE.MathUtils.degToRad(e.o.rotZ), 0);
-          dummy.scale.set(1, 1, 1);
-          dummy.updateMatrix();
-          inst.setMatrixAt(k, dummy.matrix);
-          pmap.push({ tileIndex: ti, objectIndex: e.oi });
-        });
-        inst.instanceMatrix.needsUpdate = true;
-        inst.frustumCulled = false;
-        group.add(inst);
-        this.pickables.push({ mesh: inst, map: pmap, tileIndex: ti });
+        if (model) { let a = objByPath.get(o.path); if (!a) { a = []; objByPath.set(o.path, a); } a.push({ ti, oi, o }); }
+        else boxEntries.push({ ti, oi, o });
       }
 
-      // [splineAttachement] (řady podél splajnů) + [attachObj] (zavěšené objekty)
-      // této dlaždice - matice jsou předpočítané výše (vč. vnořených attachObj).
-      const attByPath = new Map<string, THREE.Matrix4[]>();
-      const pushMat = (path: string, m: THREE.Matrix4) => {
-        let mats = attByPath.get(path);
-        if (!mats) { mats = []; attByPath.set(path, mats); }
-        mats.push(m);
-      };
+      // [splineAttachement] + [attachObj] této dlaždice → globální kbelíky.
       for (let ai = 0; ai < t.splineAttachments.length; ai++) {
         const a = t.splineAttachments[ai];
         const mats = splineRowMats.get(`${ti}:${ai}`);
         if (!mats) continue;
-        for (const m of mats) pushMat(a.path, m);
+        for (const m of mats) pushAtt(a.path, m);
       }
       for (const a of t.attachObjects) {
         const m = attachResolved.get(a);
-        if (m) pushMat(a.path, m);
-      }
-      for (const [p, mats] of attByPath) {
-        const model = this.loadedModels.get(p);
-        if (!model || mats.length === 0) continue;
-        for (const part of model.parts) {
-          const inst = new THREE.InstancedMesh(part.geometry, part.material, mats.length);
-          mats.forEach((m, k) => inst.setMatrixAt(k, m));
-          inst.instanceMatrix.needsUpdate = true;
-          inst.frustumCulled = false;
-          inst.userData.shared = true;
-          group.add(inst);
-        }
+        if (m) pushAtt(a.path, m);
       }
 
       // Splajny této dlaždice: reálný mesh z .sli, jinak fallback žlutá čára.
@@ -976,6 +913,85 @@ export class Viewport {
       this.worldGroup.add(group);
       this.tileGroups[ti] = { group, sphere: this.tileSphere(t) };
     }
+
+    // ---- Globální instancování objektů (jeden InstancedMesh na cestu×díl) ----
+    for (const [p, entries] of objByPath) {
+      const model = this.loadedModels.get(p)!;
+      const isTree = !!model.treeBase;
+      for (const part of model.parts) {
+        // U stromů rozdělíme instance podle per-objektové textury (druh), jinak
+        // jedna skupina s výchozím materiálem modelu.
+        type Grp = { mat: THREE.Material | THREE.Material[]; items: ObjEntry[] };
+        let groups: Grp[];
+        if (isTree) {
+          const byMat = new Map<THREE.Material | THREE.Material[], ObjEntry[]>();
+          for (const e of entries) {
+            const tex = this.treeTexFor(e.o);
+            const mat = tex ? this.treeMaterialFor(tex) : part.material;
+            let a = byMat.get(mat); if (!a) { a = []; byMat.set(mat, a); } a.push(e);
+          }
+          groups = [...byMat.entries()].map(([mat, items]) => ({ mat, items }));
+        } else {
+          groups = [{ mat: part.material, items: entries }];
+        }
+        for (const g of groups) {
+          const inst = new THREE.InstancedMesh(part.geometry, g.mat, g.items.length);
+          inst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+          const pmap: { tileIndex: number; objectIndex: number }[] = [];
+          g.items.forEach((e, k) => {
+            this.setObjMatrix(dummy, map.tiles[e.ti], e.o, model.originRotY, model.absoluteHeight);
+            inst.setMatrixAt(k, dummy.matrix);
+            pmap.push({ tileIndex: e.ti, objectIndex: e.oi });
+            const key = `${e.ti}:${e.oi}`;
+            let arr = this.objInstances.get(key);
+            if (!arr) { arr = []; this.objInstances.set(key, arr); }
+            arr.push({ mesh: inst, k, originRotY: model.originRotY, absolute: model.absoluteHeight });
+          });
+          inst.instanceMatrix.needsUpdate = true;
+          inst.frustumCulled = false; // globální mesh pokrývá celou mapu
+          inst.userData.shared = true; // geometrie/materiál z cache - nedisposovat
+          this.worldGroup.add(inst);
+          this.pickables.push({ mesh: inst, map: pmap, tileIndex: -1 });
+        }
+      }
+    }
+
+    // Fallback boxy (nenačtené modely) - jeden globální InstancedMesh.
+    if (boxEntries.length) {
+      const geo = new THREE.BoxGeometry(6, OBJ_H * 2, 6);
+      const mat = new THREE.MeshStandardMaterial({ color: 0x6f7c8f, roughness: 0.85 });
+      const inst = new THREE.InstancedMesh(geo, mat, boxEntries.length);
+      const pmap: { tileIndex: number; objectIndex: number }[] = [];
+      boxEntries.forEach((e, k) => {
+        const t = map.tiles[e.ti];
+        const h = tileHeight(t, e.o.x, e.o.y);
+        dummy.position.copy(worldPos(t.tileX, t.tileY, e.o.x, e.o.y, h + e.o.z + OBJ_H));
+        dummy.rotation.set(0, THREE.MathUtils.degToRad(e.o.rotZ), 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        inst.setMatrixAt(k, dummy.matrix);
+        pmap.push({ tileIndex: e.ti, objectIndex: e.oi });
+      });
+      inst.instanceMatrix.needsUpdate = true;
+      inst.frustumCulled = false;
+      this.worldGroup.add(inst);
+      this.pickables.push({ mesh: inst, map: pmap, tileIndex: -1 });
+    }
+
+    // Globální instancování [splineAttachement]/[attachObj].
+    for (const [p, mats] of attByPath) {
+      const model = this.loadedModels.get(p);
+      if (!model || mats.length === 0) continue;
+      for (const part of model.parts) {
+        const inst = new THREE.InstancedMesh(part.geometry, part.material, mats.length);
+        mats.forEach((m, k) => inst.setMatrixAt(k, m));
+        inst.instanceMatrix.needsUpdate = true;
+        inst.frustumCulled = false;
+        inst.userData.shared = true;
+        this.worldGroup.add(inst);
+      }
+    }
+
     // Malované overlay vrstvy znovu vytvoř z perzistentních masek.
     this.rebuildPaintOverlays();
   }
@@ -1239,11 +1255,17 @@ export class Viewport {
   private pickObject(): { tileIndex: number; objectIndex: number } | null {
     let best: { dist: number; hit: { tileIndex: number; objectIndex: number } } | null = null;
     for (const pk of this.pickables) {
-      if (this.tileGroups[pk.tileIndex]?.group.visible === false) continue; // skryté dlaždice nelze vybrat
+      // Per-dlaždicové pickables (tileIndex>=0): přeskoč skryté dlaždice. Globální
+      // instanced meshe (tileIndex=-1) pokrývají víc dlaždic → viditelnost se řeší
+      // až u konkrétního zásahu níže.
+      if (pk.tileIndex >= 0 && this.tileGroups[pk.tileIndex]?.group.visible === false) continue;
       const hits = this.raycaster.intersectObject(pk.mesh);
       for (const h of hits) {
-        if (h.instanceId != null && (!best || h.distance < best.dist)) {
-          best = { dist: h.distance, hit: pk.map[h.instanceId] };
+        if (h.instanceId != null) {
+          const hit = pk.map[h.instanceId];
+          // Objekt na skryté (cullované) dlaždici nelze vybrat.
+          if (this.tileGroups[hit.tileIndex]?.group.visible === false) break;
+          if (!best || h.distance < best.dist) best = { dist: h.distance, hit };
         }
         break;
       }
