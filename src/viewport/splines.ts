@@ -1,8 +1,8 @@
 import * as THREE from "three";
 import { TILE_SIZE } from "../omsi/types";
 import type { MapSpline } from "../omsi/types";
-import { parseSli } from "../omsi/sli";
-import type { SliDef } from "../omsi/sli";
+import { parseSli, PATH_CAR, PATH_PED, PATH_RAIL } from "../omsi/sli";
+import type { SliDef, SliPath } from "../omsi/sli";
 import {
   decodeTexture, textureCandidates, tryReadNamed, dirOf,
 } from "./models";
@@ -143,7 +143,10 @@ export async function loadSpline(src: AssetSource, sliPath: string): Promise<Loa
   const buf = await src.readFile(sliPath);
   if (!buf) return null;
   const def = parseSli(new TextDecoder("windows-1252").decode(buf));
-  if (!def.profiles.length) return null;
+  // Drž definici i když nemá grafický profil, ale má AI dráhy ([path]) -
+  // neviditelné splajny (invis_sidewalk, pěší/busové dráhy) musí jít zobrazit
+  // v AI overlay. Bez profilu i bez drah nemá smysl (→ fallback žlutá čára).
+  if (!def.profiles.length && !def.paths.length) return null;
   const dir = dirOf(sliPath);
   const textures: (THREE.Texture | null)[] = [];
   for (const texName of def.textures) {
@@ -166,9 +169,8 @@ export async function loadSpline(src: AssetSource, sliPath: string): Promise<Loa
 
 const ASPHALT: [number, number, number] = [0.33, 0.34, 0.36];
 
-/** Vytvoří materiál pro daný index textury (šedý asfalt, když textura chybí). */
-function splineMaterial(loaded: LoadedSpline, texIndex: number): THREE.MeshStandardMaterial {
-  const tex = loaded.textures[texIndex] ?? null;
+/** Vytvoří materiál pro splajn (šedý asfalt, když textura chybí; helper poloprůhledně). */
+function splineMaterialFor(tex: THREE.Texture | null, onlyEditor: boolean): THREE.MeshStandardMaterial {
   const mat = new THREE.MeshStandardMaterial({
     color: new THREE.Color(ASPHALT[0], ASPHALT[1], ASPHALT[2]),
     roughness: 0.95, metalness: 0, side: THREE.DoubleSide,
@@ -179,7 +181,7 @@ function splineMaterial(loaded: LoadedSpline, texIndex: number): THREE.MeshStand
     mat.needsUpdate = true;
   }
   // Pomocné splajny (neviditelné ve hře) kreslíme poloprůhledně jako helper.
-  if (loaded.def.onlyEditor) {
+  if (onlyEditor) {
     mat.transparent = true;
     mat.opacity = 0.35;
     mat.depthWrite = false;
@@ -188,27 +190,41 @@ function splineMaterial(loaded: LoadedSpline, texIndex: number): THREE.MeshStand
 }
 
 /**
- * Postaví mesh splajnu: jedna geometrie se skupinami podle textury + pole
- * materiálů. Textury jsou sdílené z `loaded` (geometrie/materiály jsou vlastní
- * a bezpečně disposovatelné; textury žijí v cache a nedisposují se).
+ * Kbelík sloučené geometrie splajnů jedné dlaždice, klíčovaný podle textury
+ * (+ helper flag). Sem se extruduje profil mnoha splajnů dlaždice, aby celá
+ * dlaždice byla jen pár draw callů místo tisíců samostatných meshů.
  */
-export function buildSplineMesh(
+export interface SplineMergeBucket {
+  tex: THREE.Texture | null;
+  onlyEditor: boolean;
+  pos: number[];
+  uv: number[];
+  idx: number[];
+}
+
+/** Klíč kbelíku: shodná textura + helper flag → jeden mesh. */
+function bucketKey(tex: THREE.Texture | null, onlyEditor: boolean): string {
+  return `${onlyEditor ? "E" : "N"}|${tex ? tex.uuid : "none"}`;
+}
+
+/**
+ * Přidá geometrii jednoho splajnu do sdílených kbelíků dlaždice (klíč = textura).
+ * Víc splajnů téže dlaždice tak sdílí jeden buffer → jeden draw call na texturu.
+ */
+export function appendSplineGeometry(
+  buckets: Map<string, SplineMergeBucket>,
   loaded: LoadedSpline, s: MapSpline, tileX: number, tileY: number
-): THREE.Mesh {
+): void {
   const steps = splineSteps(s);
   const frames = splineFrames(s, steps);
   const baseZ = s.z;
-
-  // Buffery sdružené podle indexu textury (→ skupiny geometrie).
-  const byTex = new Map<number, { pos: number[]; uv: number[]; idx: number[] }>();
-  const bucket = (ti: number) => {
-    let b = byTex.get(ti);
-    if (!b) { b = { pos: [], uv: [], idx: [] }; byTex.set(ti, b); }
-    return b;
-  };
+  const onlyEditor = !!loaded.def.onlyEditor;
 
   for (const profile of loaded.def.profiles) {
-    const b = bucket(profile.texIndex);
+    const tex = loaded.textures[profile.texIndex] ?? null;
+    const key = bucketKey(tex, onlyEditor);
+    let b = buckets.get(key);
+    if (!b) { b = { tex, onlyEditor, pos: [], uv: [], idx: [] }; buckets.set(key, b); }
     const pts = profile.points;
     // Každý sousední pár bodů profilu = jeden extrudovaný pás podél osy.
     for (let p = 0; p < pts.length - 1; p++) {
@@ -226,32 +242,27 @@ export function buildSplineMesh(
       }
     }
   }
+}
 
-  const positions: number[] = [];
-  const uvs: number[] = [];
-  const indices: number[] = [];
-  const materials: THREE.Material[] = [];
-  const geo = new THREE.BufferGeometry();
-  let vertOffset = 0, triOffset = 0;
-  for (const [texIndex, b] of byTex) {
-    const matSlot = materials.length;
-    materials.push(splineMaterial(loaded, texIndex));
-    for (const v of b.pos) positions.push(v);
-    for (const v of b.uv) uvs.push(v);
-    for (const v of b.idx) indices.push(v + vertOffset);
-    geo.addGroup(triOffset, b.idx.length, matSlot);
-    vertOffset += b.pos.length / 3;
-    triOffset += b.idx.length;
+/**
+ * Vytvoří sloučené meshe splajnů dlaždice z naplněných kbelíků - jeden mesh na
+ * texturu. Geometrie/materiály jsou vlastní (bezpečně disposovatelné); textury
+ * žijí ve sdílené cache a nedisposují se.
+ */
+export function buildMergedSplineMeshes(buckets: Map<string, SplineMergeBucket>): THREE.Mesh[] {
+  const meshes: THREE.Mesh[] = [];
+  for (const b of buckets.values()) {
+    if (b.idx.length === 0) continue;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(b.pos), 3));
+    geo.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(b.uv), 2));
+    geo.setIndex(b.idx);
+    geo.computeVertexNormals();
+    const mesh = new THREE.Mesh(geo, splineMaterialFor(b.tex, b.onlyEditor));
+    mesh.renderOrder = 1; // nad terénem
+    meshes.push(mesh);
   }
-
-  geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
-  geo.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(uvs), 2));
-  geo.setIndex(indices);
-  geo.computeVertexNormals();
-
-  const mesh = new THREE.Mesh(geo, materials.length === 1 ? materials[0] : materials);
-  mesh.renderOrder = 1; // nad terénem
-  return mesh;
+  return meshes;
 }
 
 /** Přidá jeden vrchol (poloha + UV) do bufferu daného pásu. */
@@ -266,6 +277,96 @@ function pushVert(
   const h = baseZ + f.hGrad + p.z;
   b.pos.push(tileX * TILE_SIZE + lx, h, -(tileY * TILE_SIZE + ly));
   b.uv.push(p.u, f.d * p.vSlope);
+}
+
+// ---------- AI dráhy ([path]) = vizualizace AI provozu ----------
+//
+// Každá [path] v .sli je jízdní pruh / chodník / kolej, po které jezdí/chodí AI.
+// Dráha kopíruje osu splajnu posunutou příčně o offsetX a svisle o offsetZ, se
+// stejným obloukem i gradientem. Kreslíme ji jako čáru (overlay nad silnicí),
+// barvu dle typu; u aut přidáme šipky směru (OMSI jezdí vpravo: pruh po směru
+// splajnu má dir 0, protisměr dir 1). Segmenty VŠECH splajnů dlaždice se slučují
+// do jednoho LineSegments na typ (výkon - jinak desetitisíce draw callů).
+
+/** Barvy AI drah dle typu: auta oranžová, chodci zelená, kolej azurová. */
+const PATH_COLORS: Record<number, number> = {
+  [PATH_CAR]: 0xff8a1e,
+  [PATH_PED]: 0x37d35a,
+  [PATH_RAIL]: 0x33c0e6,
+};
+/** Mírné zvednutí čáry nad povrch dráhy, ať nebliká se silnicí (z-fighting). */
+const PATH_LIFT = 0.08;
+
+/** Lokální bod (lx,ly,h) → světová pozice [x,y,z]. */
+function toWorldXYZ(lx: number, ly: number, h: number, ox: number, oz: number): [number, number, number] {
+  return [ox + lx, h, -(oz + ly)];
+}
+
+/** Přidá šipky směru (chevrony „>") podél jízdního pruhu - ukazují směr AI jízdy. */
+function appendChevrons(arr: number[], s: MapSpline, path: SliPath, ox: number, oz: number): void {
+  const tdir = path.dir === 1 ? -1 : 1; // dir 1 = protisměr splajnu
+  const spacing = 18, half = 1.4, wing = 1.1;
+  const end = s.length - 2;
+  for (let d = 6; d < end; d += spacing) {
+    const sm = splineSampleAt(s, d);
+    const th = THREE.MathUtils.degToRad(sm.headingDeg);
+    const fx = Math.sin(th) * tdir, fy = Math.cos(th) * tdir; // směr jízdy (lokálně)
+    const cx = sm.lx + sm.rx * path.offsetX, cy = sm.ly + sm.ry * path.offsetX;
+    const h = sm.worldY + path.offsetZ + PATH_LIFT;
+    const tip = toWorldXYZ(cx + fx * half, cy + fy * half, h, ox, oz);
+    const tl = toWorldXYZ(cx - fx * half + sm.rx * wing, cy - fy * half + sm.ry * wing, h, ox, oz);
+    const tr = toWorldXYZ(cx - fx * half - sm.rx * wing, cy - fy * half - sm.ry * wing, h, ox, oz);
+    arr.push(tip[0], tip[1], tip[2], tl[0], tl[1], tl[2]);
+    arr.push(tip[0], tip[1], tip[2], tr[0], tr[1], tr[2]);
+  }
+}
+
+/**
+ * Přidá čáry AI drah jednoho splajnu do sdílených bufferů dlaždice (klíč = typ
+ * dráhy). Víc splajnů dlaždice sdílí jeden buffer na typ → jeden draw call.
+ */
+export function appendPathLines(
+  perType: Map<number, number[]>,
+  loaded: LoadedSpline, s: MapSpline, tileX: number, tileY: number
+): void {
+  if (!loaded.def.paths.length) return;
+  const steps = splineSteps(s);
+  const frames = splineFrames(s, steps);
+  const ox = tileX * TILE_SIZE, oz = tileY * TILE_SIZE;
+  for (const path of loaded.def.paths) {
+    let arr = perType.get(path.type);
+    if (!arr) { arr = []; perType.set(path.type, arr); }
+    // Polylinie podél osy posunuté o offsetX (příčně) a offsetZ (svisle).
+    let prev: [number, number, number] | null = null;
+    for (const f of frames) {
+      const lx = f.lx + f.rx * path.offsetX;
+      const ly = f.ly + f.ry * path.offsetX;
+      const h = s.z + f.hGrad + path.offsetZ + PATH_LIFT;
+      const wp = toWorldXYZ(lx, ly, h, ox, oz);
+      if (prev) arr.push(prev[0], prev[1], prev[2], wp[0], wp[1], wp[2]);
+      prev = wp;
+    }
+    // Šipky směru jen u aut (nejnázornější); chodci/kolej bývají obousměrní.
+    if (path.type === PATH_CAR && s.length > 10) appendChevrons(arr, s, path, ox, oz);
+  }
+}
+
+/** Z naplněných bufferů (klíč = typ) vytvoří po jednom LineSegments na typ. */
+export function buildPathLineMeshes(perType: Map<number, number[]>): THREE.LineSegments[] {
+  const out: THREE.LineSegments[] = [];
+  for (const [type, arr] of perType) {
+    if (!arr.length) continue;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(arr), 3));
+    const mat = new THREE.LineBasicMaterial({
+      color: PATH_COLORS[type] ?? 0xffffff,
+      transparent: true, opacity: 0.92, depthWrite: false,
+    });
+    const seg = new THREE.LineSegments(geo, mat);
+    seg.renderOrder = 3; // nad silnicí i overlay vrstvami
+    out.push(seg);
+  }
+  return out;
 }
 
 /** Cache načtených splajnů podle cesty .sli. */

@@ -11,8 +11,8 @@ import {
 import { terrainHeightAt } from "../omsi/terrain";
 import { ModelCache, decodeTexture, tryReadNamed, textureCandidates, dirOf, clearTextureCache } from "./models";
 import type { AssetSource, LoadedModel } from "./models";
-import { SplineCache, buildSplineMesh, splineCenterline, splineSampleAt } from "./splines";
-import type { LoadedSpline } from "./splines";
+import { SplineCache, appendSplineGeometry, buildMergedSplineMeshes, splineCenterline, splineSampleAt, appendPathLines, buildPathLineMeshes } from "./splines";
+import type { LoadedSpline, SplineMergeBucket } from "./splines";
 import { runPool } from "../util/async";
 
 /** Max. souběžně načítaných assetů (bounded pool - brání I/O zahlcení u velkých map). */
@@ -32,6 +32,8 @@ export type SplField = "x" | "y" | "z" | "rotZ" | "length" | "radius" | "gradien
 
 const SPLINE_COLOR = 0xffb454;
 const SPLINE_SEL_COLOR = 0x4ea1ff;
+/** Barva zjednodušené osové čáry splajnu ve vzdáleném (LOD) pohledu - tlumený asfalt. */
+const SPLINE_LOD_COLOR = 0x6b7079;
 const OBJ_H = 6;
 
 function worldPos(tileX: number, tileY: number, x: number, y: number, z: number): THREE.Vector3 {
@@ -72,8 +74,10 @@ export class Viewport {
   private lastHudT = performance.now();
   /** Zpětný index: "tileIndex:objectIndex" → instance (mesh + slot) ve všech dílech modelu. */
   private objInstances = new Map<string, { mesh: THREE.InstancedMesh; k: number; originRotY: number; absolute: boolean }[]>();
-  /** Zpětný index: "tileIndex:splineIndex" → mesh splajnu (pro cílený přestavec). */
-  private splineObjects = new Map<string, THREE.Object3D>();
+  /** Sloučené meshe splajnů podle indexu dlaždice (render + raycast výběru).
+   *  Splajny dlaždice jsou sloučené do pár meshů (per textura) místo tisíců
+   *  samostatných - výběr se dořeší nejbližší osou v zasažené dlaždici. */
+  private tileSplineMeshes = new Map<number, THREE.Object3D[]>();
   private highlight: THREE.LineSegments;
 
   private currentMap: OmsiMap | null = null;
@@ -86,6 +90,9 @@ export class Viewport {
    *  aby pouhý klik mikro-posunem označil dlaždici jako změněnou). */
   private dragStartScreen: { x: number; y: number } | null = null;
   private static readonly DRAG_THRESHOLD_PX = 3;
+  /** Vzdálenost kamery (m), do níž se splajny dlaždice kreslí detailně; dál jen
+   *  zjednodušená osová čára (LOD) - kvůli plynulému overview velkých map. */
+  private static readonly LOD_DETAIL_DIST = 1400;
 
   // Historie úprav (undo/redo): snapshot sekcí dotčené dlaždice před/po editaci.
   // Sekce jsou zdroj pravdy, takže obnovení + deriveTile + build vrátí přesný stav.
@@ -145,6 +152,15 @@ export class Viewport {
   private splineCache: SplineCache | null = null;
   private loadedSplines = new Map<string, LoadedSpline | null>();
   private splineLoadToken = 0;
+
+  // ---- AI provoz + semafory (overlay) ----
+  /** Zapnutá vizualizace AI drah + semaforů (přepínač v liště). */
+  private aiVisible = false;
+  /** ID objektů, které signalroutes.cfg označuje jako návěstidla/semafory. */
+  private signalIds = new Set<number>();
+  private signalToken = 0;
+  /** Poslední spočtené počty pro status (AI dráhy dle typu + semafory). */
+  private aiStats = { car: 0, ped: 0, rail: 0, lights: 0 };
 
   onSelect: ((sel: Selection | null) => void) | null = null;
   onChange: ((sel: Selection | null) => void) | null = null;
@@ -235,6 +251,7 @@ export class Viewport {
     window.addEventListener("keydown", this.onCamKeyDown);
     window.addEventListener("keyup", this.onCamKeyUp);
     window.addEventListener("blur", () => { this.camDirs.clear(); });
+    if (import.meta.env?.DEV) (window as unknown as { __vp?: Viewport }).__vp = this;
     this.animate();
   }
 
@@ -378,7 +395,9 @@ export class Viewport {
         let rz = THREE.MathUtils.radToDeg(p.rotation.y) % 360; if (rz < 0) rz += 360;
         setSplineField(t, s, "rotZ", round3(rz));
       }
-      this.updateSplineMesh(sel.tileIndex, sel.splineIndex);
+      // Mesh dlaždice přestavíme až po puštění gizma (onGizmoDragChanged) - při
+      // sloučeném renderu by přestavba celé dlaždice každý snímek sekala. Živě
+      // stačí modrá osová čára (overlay).
       this.refreshSplineLine();
     }
     this.onChange?.(sel);
@@ -601,14 +620,30 @@ export class Viewport {
     const radius = Math.min(14000, Math.max(1600, zoomDist * 2 + 900));
     const r2 = radius * radius;
 
+    // LOD: dlaždice blíž než LOD_DETAIL_DIST od kamery kreslí detailní (texturované)
+    // splajny, vzdálenější jen zjednodušenou osovou čáru → v overview drasticky
+    // méně draw callů splajnů (1/dlaždici místo desítek).
+    const camPos = this.camera.position;
+    const lodDist2 = Viewport.LOD_DETAIL_DIST * Viewport.LOD_DETAIL_DIST;
+
     let visible = 0;
-    for (const tg of this.tileGroups) {
+    for (let ti = 0; ti < this.tileGroups.length; ti++) {
+      const tg = this.tileGroups[ti];
       if (!tg) continue;
       const dx = tg.sphere.center.x - tgt.x, dz = tg.sphere.center.z - tgt.z;
       const near = dx * dx + dz * dz <= r2;
       const v = near && this.frustum.intersectsSphere(tg.sphere);
       tg.group.visible = v;
-      if (v) visible++;
+      if (!v) continue;
+      visible++;
+      const cdx = tg.sphere.center.x - camPos.x, cdz = tg.sphere.center.z - camPos.z;
+      const detail = cdx * cdx + cdz * cdz <= lodDist2;
+      const objs = this.tileSplineMeshes.get(ti);
+      if (objs) {
+        for (const o of objs) {
+          o.visible = (o.userData as { splineLod?: boolean }).splineLod ? !detail : detail;
+        }
+      }
     }
     this.visibleTileCount = visible;
   }
@@ -644,6 +679,7 @@ export class Viewport {
     this.loadGroundTexture();
     this.loadLightmaps();
     this.loadTreeTextures();
+    void this.loadSignalRoutes();
   }
   rebuild() { this.build(); }
   /** Znovu načte základní texturu terénu (po změně map.groundTex[0]). */
@@ -751,7 +787,7 @@ export class Viewport {
     this.disposeWorld();
     this.pickables = [];
     this.objInstances.clear();
-    this.splineObjects.clear();
+    this.tileSplineMeshes.clear();
     this.groundMeshes = [];
     this.terrainMeshes.clear();
     this.selSplineLine = null;
@@ -898,17 +934,10 @@ export class Viewport {
         if (m) pushAtt(a.path, m);
       }
 
-      // Splajny této dlaždice: reálný mesh z .sli, jinak fallback žlutá čára.
-      for (let si = 0; si < t.splines.length; si++) {
-        const s = t.splines[si];
-        const loaded = this.loadedSplines.get(s.path);
-        const obj: THREE.Object3D = loaded
-          ? buildSplineMesh(loaded, s, t.tileX, t.tileY)
-          : this.buildSpline(t, s);
-        obj.userData = { tileIndex: ti, splineIndex: si };
-        group.add(obj);
-        this.splineObjects.set(`${ti}:${si}`, obj);
-      }
+      // Splajny této dlaždice sloučíme do pár meshů (per textura) + jedné žluté
+      // čáry pro nenačtené. Místo tisíců draw callů má dlaždice jen pár. Výběr se
+      // řeší raycastem meshe → nejbližší osa splajnu v zasažené dlaždici.
+      this.addTileSplines(ti, t, group);
 
       this.worldGroup.add(group);
       this.tileGroups[ti] = { group, sphere: this.tileSphere(t) };
@@ -994,6 +1023,127 @@ export class Viewport {
 
     // Malované overlay vrstvy znovu vytvoř z perzistentních masek.
     this.rebuildPaintOverlays();
+
+    // AI overlay: markery semaforů/návěstidel + přepočet statistik.
+    this.buildAiMarkers(map);
+  }
+
+  /**
+   * Postaví markery semaforů/návěstidel (svislé majáky nad objektem) a přepočítá
+   * statistiky AI provozu. Semafor = objekt, jehož .sco cesta odpovídá vzoru
+   * (Ampel/signal/…) NEBO jehož ID je v signalroutes.cfg. Markery jsou AI overlay
+   * (viditelné dle aiVisible), sloučené do jediného LineSegments (výkon).
+   */
+  private buildAiMarkers(map: OmsiMap): void {
+    // Spočítej, které .sli nesou jaký typ AI dráhy (napříč mapou, bez duplicit).
+    const carSli = new Set<string>(), pedSli = new Set<string>(), railSli = new Set<string>();
+    for (const [path, loaded] of this.loadedSplines) {
+      if (!loaded) continue;
+      for (const p of loaded.def.paths) {
+        if (p.type === 0) carSli.add(path);
+        else if (p.type === 1) pedSli.add(path);
+        else if (p.type === 2) railSli.add(path);
+      }
+    }
+    let car = 0, ped = 0, rail = 0;
+    for (const t of map.tiles) for (const s of t.splines) {
+      if (carSli.has(s.path)) car++;
+      if (pedSli.has(s.path)) ped++;
+      if (railSli.has(s.path)) rail++;
+    }
+
+    const stick: number[] = [];
+    const H = 7, CR = 1.2; // výška majáku + příčka nahoře
+    let lights = 0;
+    for (const t of map.tiles) {
+      for (const o of t.objects) {
+        if (!this.isSignalObject(o)) continue;
+        lights++;
+        const wx = t.tileX * TILE_SIZE + o.x;
+        const wz = -(t.tileY * TILE_SIZE + o.y);
+        const base = o.z, top = o.z + H;
+        stick.push(wx, base, wz, wx, top, wz);          // svislý stožár
+        stick.push(wx - CR, top, wz, wx + CR, top, wz);  // příčka X
+        stick.push(wx, top, wz - CR, wx, top, wz + CR);  // příčka Z
+      }
+    }
+    if (stick.length) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(stick), 3));
+      const mat = new THREE.LineBasicMaterial({ color: 0xff2e2e, transparent: true, opacity: 0.95, depthWrite: false });
+      const seg = new THREE.LineSegments(geo, mat);
+      seg.renderOrder = 4;
+      seg.visible = this.aiVisible;
+      seg.userData = { aiOverlay: true };
+      this.worldGroup.add(seg);
+    }
+    this.aiStats = { car, ped, rail, lights };
+  }
+
+  /** Vzor cest .sco pokládaných za semafor/návěstidlo (OMSI pojmenování). */
+  private static readonly SIGNAL_RE =
+    /ampel|trafficlight|lichtsignal|lichtzeichen|_tl_|sv_esig|sv_hsig|sv_vsig|signal/i;
+
+  /** Je objekt semafor/návěstidlo? (ID v signalroutes.cfg nebo cesta dle vzoru.) */
+  private isSignalObject(o: MapObject): boolean {
+    if (o.id != null && this.signalIds.has(o.id)) return true;
+    return Viewport.SIGNAL_RE.test(o.path);
+  }
+
+  /**
+   * Zapne/vypne vizualizaci AI provozu (dráhy + semafory). Jen přepne viditelnost
+   * už postavených overlay objektů (bez přestavby scény) a nahlásí statistiku.
+   */
+  setAiTraffic(on: boolean): void {
+    this.aiVisible = on;
+    this.worldGroup.traverse((o) => { if (o.userData?.aiOverlay) o.visible = on; });
+    const s = this.aiStats;
+    if (on) {
+      this.onStatus?.(
+        `AI provoz: ${s.car} silnic pro auta, ${s.ped} pro chodce, ${s.rail} kolejí; ` +
+        `${s.lights} semaforů/návěstidel.`
+      );
+    } else {
+      this.onStatus?.("AI provoz skryt.");
+    }
+  }
+
+  /** Vrací, zda je AI overlay zapnutý (pro synchronizaci UI tlačítka). */
+  aiTrafficVisible(): boolean { return this.aiVisible; }
+
+  /**
+   * Načte signalroutes.cfg mapy (kořen mapy, ASCII) a vytáhne ID objektů, která
+   * jsou návěstidla/semafory ([signal]/[distsignal]/[nextsignal] - 1. číslo za
+   * hlavičkou je ID objektu). Best-effort: když soubor chybí, přeskočí se. Po
+   * načtení přestaví markery (build), aby se zahrnuly i signály bez klíčové cesty.
+   */
+  private async loadSignalRoutes(): Promise<void> {
+    const token = ++this.signalToken;
+    this.signalIds = new Set();
+    const map = this.currentMap;
+    if (!this.assetSrc || !map?.rootName) return;
+    let buf: ArrayBuffer | null = null;
+    try { buf = await this.assetSrc.readFile(`maps\\${map.rootName}\\signalroutes.cfg`); } catch { buf = null; }
+    if (!buf || token !== this.signalToken || this.currentMap !== map) return;
+    const text = new TextDecoder("windows-1252").decode(buf);
+    const lines = text.split(/\r?\n/);
+    const ids = new Set<number>();
+    for (let i = 0; i < lines.length; i++) {
+      const n = lines[i].trim().toLowerCase();
+      if (n === "[signal]" || n === "[distsignal]" || n === "[nextsignal]") {
+        // 1. neprázdný řádek pod hlavičkou = ID objektu.
+        for (let k = i + 1; k < lines.length && k < i + 4; k++) {
+          const v = lines[k].trim();
+          if (!v) continue;
+          const id = parseInt(v, 10);
+          if (Number.isFinite(id) && id > 0) ids.add(id);
+          break;
+        }
+      }
+    }
+    if (token !== this.signalToken || this.currentMap !== map) return;
+    this.signalIds = ids;
+    this.build(); // přepočítá markery včetně ID-based signálů
   }
 
   /** Konzervativní obalová koule dlaždice (footprint + velkorysý vertikální rozsah). */
@@ -1038,35 +1188,117 @@ export class Viewport {
     return true;
   }
 
-  /** Cílená přestavba jediného splajnu (bez přestavby celé scény). */
-  private updateSplineMesh(tileIndex: number, splineIndex: number): void {
-    if (!this.currentMap) return;
-    const key = `${tileIndex}:${splineIndex}`;
-    const tg = this.tileGroups[tileIndex];
-    const old = this.splineObjects.get(key);
-    if (old) {
-      tg?.group.remove(old);
-      this.disposeObject3D(old);
+  /**
+   * Postaví sloučené meshe splajnů jedné dlaždice a přidá je do její skupiny.
+   * Načtené splajny se extrudují do kbelíků per textura (→ jeden mesh na texturu),
+   * nenačtené se kreslí jako jedna žlutá čára (LineSegments). Vše nese
+   * `userData.splineTile = ti`, aby raycast věděl, do které dlaždice zásah patří.
+   */
+  private addTileSplines(ti: number, t: MapTile, group: THREE.Group): void {
+    const buckets = new Map<string, SplineMergeBucket>();
+    const fallbackPts: THREE.Vector3[] = [];
+    // AI dráhy ([path] v .sli) sloučené dle typu (0 auta / 1 chodci / 2 kolej) -
+    // overlay vizualizace AI provozu, viditelná dle this.aiVisible.
+    const pathByType = new Map<number, number[]>();
+    for (let si = 0; si < t.splines.length; si++) {
+      const s = t.splines[si];
+      const loaded = this.loadedSplines.get(s.path);
+      if (loaded) {
+        appendSplineGeometry(buckets, loaded, s, t.tileX, t.tileY);
+        appendPathLines(pathByType, loaded, s, t.tileX, t.tileY);
+      } else {
+        // Fallback: osa jako úsečky (dvojice bodů) do sloučené LineSegments.
+        const pts = this.splinePoints(t, s);
+        for (let k = 0; k < pts.length - 1; k++) { fallbackPts.push(pts[k], pts[k + 1]); }
+      }
     }
-    const t = this.currentMap.tiles[tileIndex];
-    const s = t.splines[splineIndex];
-    const loaded = this.loadedSplines.get(s.path);
-    const obj = loaded
-      ? buildSplineMesh(loaded, s, t.tileX, t.tileY)
-      : this.buildSpline(t, s);
-    obj.userData = { tileIndex, splineIndex };
-    tg?.group.add(obj);
-    this.splineObjects.set(key, obj);
+    const objs: THREE.Object3D[] = buildMergedSplineMeshes(buckets);
+    if (fallbackPts.length) {
+      const geo = new THREE.BufferGeometry().setFromPoints(fallbackPts);
+      objs.push(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: SPLINE_COLOR })));
+    }
+    for (const o of objs) {
+      o.userData = { splineTile: ti };
+      group.add(o);
+    }
+    // LOD: jedna sloučená osová čára celé dlaždice (všechny splajny). Ve vzdáleném
+    // pohledu (overview) se místo desítek texturovaných meshů kreslí jen tahle
+    // (1 draw call/dlaždici); detail se zapne až po přiblížení. Přepíná
+    // updateVisibility podle vzdálenosti kamery. Výběr funguje v obou režimech.
+    const lodPts: THREE.Vector3[] = [];
+    for (const s of t.splines) {
+      const pts = this.splinePoints(t, s, 0.2);
+      for (let k = 0; k < pts.length - 1; k++) { lodPts.push(pts[k], pts[k + 1]); }
+    }
+    if (lodPts.length) {
+      const lod = new THREE.LineSegments(
+        new THREE.BufferGeometry().setFromPoints(lodPts),
+        new THREE.LineBasicMaterial({ color: SPLINE_LOD_COLOR })
+      );
+      lod.userData = { splineTile: ti, splineLod: true };
+      lod.visible = false; // výchozí; updateVisibility hned nastaví podle vzdálenosti
+      group.add(lod);
+      objs.push(lod);
+    }
+    this.tileSplineMeshes.set(ti, objs);
+    // AI overlay dlaždice: čáry drah (přepínatelné přes aiVisible).
+    for (const line of buildPathLineMeshes(pathByType)) {
+      line.userData = { aiOverlay: true, splineTile: ti };
+      line.visible = this.aiVisible;
+      group.add(line);
+    }
   }
 
-  /** Viditelné splajny (z neskrytých dlaždic) pro raycast výběru. */
+  /** Cílená přestavba splajnů celé dlaždice (po editaci/přesunu splajnu). */
+  private updateSplineMesh(tileIndex: number, _splineIndex: number): void {
+    if (!this.currentMap) return;
+    const tg = this.tileGroups[tileIndex];
+    const old = this.tileSplineMeshes.get(tileIndex);
+    if (old) {
+      for (const o of old) { tg?.group.remove(o); this.disposeObject3D(o); }
+    }
+    if (tg) this.addTileSplines(tileIndex, this.currentMap.tiles[tileIndex], tg.group);
+  }
+
+  /** Viditelné spline meshe (z neskrytých dlaždic) pro raycast výběru. */
   private visibleSplineObjects(): THREE.Object3D[] {
     const out: THREE.Object3D[] = [];
-    for (const [key, obj] of this.splineObjects) {
-      const ti = Number(key.slice(0, key.indexOf(":")));
-      if (this.tileGroups[ti]?.group.visible !== false) out.push(obj);
+    for (const [ti, objs] of this.tileSplineMeshes) {
+      if (this.tileGroups[ti]?.group.visible === false) continue;
+      // Jen aktuálně viditelná reprezentace (detail NEBO LOD čára), ať pick
+      // nezasáhne skryté meshe a nevybere splajn dvakrát.
+      for (const o of objs) if (o.visible !== false) out.push(o);
     }
     return out;
+  }
+
+  /**
+   * Výběr splajnu: raycast sloučených meshů → nejbližší zásah dá dlaždici, v ní
+   * najdeme osu nejbližší k zásahu. Tím zůstává per-spline výběr i při sloučeném
+   * renderu (klik na povrch silnice vybere správný splajn).
+   */
+  private pickSpline(): { tileIndex: number; splineIndex: number } | null {
+    const hits = this.raycaster.intersectObjects(this.visibleSplineObjects(), false);
+    if (!hits.length) return null;
+    const ti = (hits[0].object.userData as { splineTile?: number }).splineTile;
+    if (ti == null) return null;
+    const si = this.nearestSplineInTile(ti, hits[0].point);
+    return si < 0 ? null : { tileIndex: ti, splineIndex: si };
+  }
+
+  /** Index splajnu dlaždice, jehož osa je nejblíž bodu `p` (world). -1 když žádný. */
+  private nearestSplineInTile(tileIndex: number, p: THREE.Vector3): number {
+    const t = this.currentMap?.tiles[tileIndex];
+    if (!t) return -1;
+    let bestI = -1, bestD = Infinity;
+    for (let si = 0; si < t.splines.length; si++) {
+      const pts = this.splinePoints(t, t.splines[si], 0);
+      for (let k = 0; k < pts.length - 1; k++) {
+        const d = distPointToSegment(p, pts[k], pts[k + 1]);
+        if (d < bestD) { bestD = d; bestI = si; }
+      }
+    }
+    return bestI;
   }
 
   /** Uvolní geometrii/materiály jednoho objektu (jen vlastní, ne sdílené textury). */
@@ -1226,10 +1458,6 @@ export class Viewport {
   private splinePoints(t: MapTile, s: MapSpline, lift = 0.3): THREE.Vector3[] {
     return splineCenterline(s, t.tileX, t.tileY, (lx, ly) => tileHeight(t, lx, ly), lift);
   }
-  private buildSpline(t: MapTile, s: MapSpline): THREE.Line {
-    const geo = new THREE.BufferGeometry().setFromPoints(this.splinePoints(t, s));
-    return new THREE.Line(geo, new THREE.LineBasicMaterial({ color: SPLINE_COLOR }));
-  }
 
   private frameMap(map: OmsiMap) {
     if (map.tiles.length === 0) return;
@@ -1303,10 +1531,9 @@ export class Viewport {
     if (this.tool === "erase") {
       const hit = this.pickObject();
       if (hit) { this.eraseAt(hit.tileIndex, "object", hit.objectIndex); return; }
-      const sHits = this.raycaster.intersectObjects(this.visibleSplineObjects(), false);
-      if (sHits.length > 0) {
-        const { tileIndex, splineIndex } = sHits[0].object.userData as { tileIndex: number; splineIndex: number };
-        this.eraseAt(tileIndex, "spline", splineIndex);
+      const sHit = this.pickSpline();
+      if (sHit) {
+        this.eraseAt(sHit.tileIndex, "spline", sHit.splineIndex);
       } else this.onStatus?.("Guma: klikni přímo na objekt nebo spline.", true);
       return;
     }
@@ -1330,9 +1557,9 @@ export class Viewport {
       return;
     }
 
-    const sHits = this.raycaster.intersectObjects(this.visibleSplineObjects(), false);
-    if (sHits.length > 0) {
-      const { tileIndex, splineIndex } = sHits[0].object.userData as { tileIndex: number; splineIndex: number };
+    const sHit = this.pickSpline();
+    if (sHit) {
+      const { tileIndex, splineIndex } = sHit;
       const spline = this.currentMap.tiles[tileIndex].splines[splineIndex];
       this.selectSpline(tileIndex, splineIndex, spline);
       this.dragging = "spline"; this.dragMoved = false; this.controls.enabled = false;
@@ -1989,3 +2216,18 @@ export class Viewport {
 }
 
 function round3(n: number): number { return Math.round(n * 1000) / 1000; }
+
+/** Vzdálenost bodu `p` od úsečky `a`-`b` (3D), pro výběr nejbližší osy splajnu. */
+const _segAB = new THREE.Vector3();
+const _segAP = new THREE.Vector3();
+function distPointToSegment(p: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3): number {
+  _segAB.subVectors(b, a);
+  const len2 = _segAB.lengthSq();
+  let t = 0;
+  if (len2 > 1e-9) {
+    t = _segAP.subVectors(p, a).dot(_segAB) / len2;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+  }
+  const cx = a.x + _segAB.x * t, cy = a.y + _segAB.y * t, cz = a.z + _segAB.z * t;
+  return Math.hypot(p.x - cx, p.y - cy, p.z - cz);
+}

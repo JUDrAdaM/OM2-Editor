@@ -18,9 +18,21 @@ import { parseOmsiConfig, num } from "./parser";
  * Body profilu MUSÍ jít zleva doprava (kvůli správným normálám / viditelnosti
  * horní strany). Extruze profilu podél křivky splajnu dává výsledný mesh.
  *
- * Sekce [heightprofile], [length], [halfcantwidth], [path] se týkají navázání
- * na terén, převýšení v obloucích a jízdních drah (AI) - pro grafický mesh je
- * zatím nepotřebujeme a ignorujeme je.
+ * Sekce [heightprofile], [length], [halfcantwidth] se týkají navázání na terén
+ * a převýšení v obloucích - pro grafický mesh je nepotřebujeme a ignorujeme je.
+ *
+ * [path] = AI dráha (jízdní pruh / chodník / kolej). Formát je zdokumentovaný
+ * přímo německou šablonou v Ruede\rail_concrete_01.sli:
+ *   {type}     Typ: 0 = AI-Straßenverkehr (auta), 1 = AI-Menschen (chodci),
+ *                   2 = Schiene (kolej, AI i hráč)
+ *   {offsetX}  příčný offset od osy splajnu (vpravo kladně), metry
+ *   {offsetZ}  výška nad osou splajnu (nahoru kladně), metry
+ *   {width}    šířka dráhy (u aut/chodců dovoluje vyhýbání), metry
+ *   {5. pole}  směr/pruh: u 2 autopruhů silnice typicky 1 (protisměr) a 0 (po
+ *              směru splajnu; OMSI jezdí vpravo), u chodníků/koleje bývá 2.
+ * Splajn „nese AI provoz" právě tehdy, když má aspoň jednu [path]. První [path]
+ * v některých souborech je ŠABLONA s placeholdery `{type}`,`0:`… (nečíselné) -
+ * ta se odfiltruje (viz parseSli), aby nevznikla falešná dráha.
  */
 
 export interface SliProfilePoint {
@@ -41,11 +53,33 @@ export interface SliProfile {
   points: SliProfilePoint[];
 }
 
+/** Typ AI dráhy ([path]) ve splajnu. */
+export const PATH_CAR = 0;      // AI-Straßenverkehr (auta)
+export const PATH_PED = 1;      // AI-Menschen (chodci)
+export const PATH_RAIL = 2;     // Schiene (kolej)
+
+/** Jedna AI dráha ([path]) splajnu: jízdní pruh, chodník nebo kolej. */
+export interface SliPath {
+  /** Typ: 0 = auta, 1 = chodci, 2 = kolej (PATH_CAR/PED/RAIL). */
+  type: number;
+  /** Příčný offset od osy splajnu (vpravo kladně), metry. */
+  offsetX: number;
+  /** Výška nad osou splajnu (nahoru kladně), metry. */
+  offsetZ: number;
+  /** Šířka dráhy, metry. */
+  width: number;
+  /** 5. pole: směr/pruh (0 = po směru splajnu, 1 = protisměr; u chodníků/koleje bývá 2). */
+  dir: number;
+}
+
 export interface SliDef {
   /** Jména textur v pořadí definice (0-based index). */
   textures: string[];
   /** Grafické profily (každý = jeden extrudovaný pás). */
   profiles: SliProfile[];
+  /** AI dráhy (jízdní pruhy / chodníky / koleje) - viz SliPath. Prázdné = splajn
+   *  nenese AI provoz (dekorace, zdi, ploty…). */
+  paths: SliPath[];
   /** Pomocný spline jen pro editor (neviditelný ve hře). */
   onlyEditor: boolean;
 }
@@ -67,12 +101,22 @@ export function parseSli(text: string): SliDef {
   const sections = parseOmsiConfig(text);
   const textures: string[] = [];
   const profiles: SliProfile[] = [];
+  const paths: SliPath[] = [];
   let current: SliProfile | null = null;
   let onlyEditor = false;
 
   for (const sec of sections) {
     const name = sec.name.toLowerCase();
-    if (name === "texture") {
+    if (name === "path") {
+      // Pozor: první [path] v některých souborech je dokumentační ŠABLONA s
+      // placeholdery (`{type}`, `0:` …) - numericValues je zahodí, takže zbyde
+      // < 4 čísel → dráha se nevytvoří. Reálná [path] má type 0/1/2 + 3-4 čísla.
+      const n = numericValues(sec.values);
+      const type = n.length ? Math.round(n[0]) : -1;
+      if (n.length >= 4 && (type === PATH_CAR || type === PATH_PED || type === PATH_RAIL)) {
+        paths.push({ type, offsetX: n[1], offsetZ: n[2], width: n[3], dir: n.length >= 5 ? Math.round(n[4]) : 0 });
+      }
+    } else if (name === "texture") {
       const file = sec.values.find((v) => v.trim().length > 0)?.trim() ?? "";
       textures.push(file);
     } else if (name === "profile") {
@@ -100,6 +144,7 @@ export function parseSli(text: string): SliDef {
   return {
     textures,
     profiles: profiles.filter((p) => p.points.length >= 2),
+    paths,
     onlyEditor,
   };
 }
