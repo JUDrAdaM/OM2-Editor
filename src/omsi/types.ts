@@ -164,6 +164,13 @@ export interface OmsiMap {
   /** Absolutní cesta ke složce mapy (pro ukládání v Electronu); prázdné v prohlížeči. */
   rootPath: string;
   tiles: MapTile[];
+  /**
+   * Kolik dlaždic [map] global.cfg reálně obsahoval. U velkých map se renderuje
+   * jen podmnožina (`tiles`) kolem středu kvůli výkonu/paměti, ale `totalTiles`
+   * drží skutečný počet (pro hlášku a statistiku). Nezáporné; rovno `tiles.length`,
+   * když se načetlo vše.
+   */
+  totalTiles: number;
   /** Syrové sekce z global.cfg, které zatím jen uchováváme. */
   globalSections: OmsiSection[];
   /**

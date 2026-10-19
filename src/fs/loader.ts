@@ -119,6 +119,34 @@ export function isElectronApp(): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Limit renderovaných dlaždic (anti-crash u velkých map)
+// ---------------------------------------------------------------------------
+const TILE_LIMIT_KEY = "om2.maxTiles.v1";
+/** Výchozí strop: kolik dlaždic velké mapy se načte/zobrazí (shluk kolem středu). */
+export const DEFAULT_TILE_LIMIT = 150;
+
+/** Aktuální strop dlaždic z Nastavení (localStorage). 0 = bez limitu (vše). */
+export function getRenderTileLimit(): number {
+  try {
+    const raw = localStorage.getItem(TILE_LIMIT_KEY);
+    if (raw == null) return DEFAULT_TILE_LIMIT;
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) && n >= 0 ? n : DEFAULT_TILE_LIMIT;
+  } catch {
+    return DEFAULT_TILE_LIMIT;
+  }
+}
+
+/** Uloží strop dlaždic (0 = vše). */
+export function setRenderTileLimit(n: number): void {
+  try {
+    localStorage.setItem(TILE_LIMIT_KEY, String(Math.max(0, Math.floor(n))));
+  } catch {
+    /* localStorage nedostupné - ignoruj */
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Verze aplikace + autoupdate (tenké obaly nad omsiAPI)
 // ---------------------------------------------------------------------------
 
@@ -216,7 +244,9 @@ function buildFromFolderResult(data: Exclude<MapFolderResult, null | { error: st
     data.globalText,
     new Map(Object.entries(data.tiles)),
     data.rootPath,
-    terrains
+    terrains,
+    undefined,
+    getRenderTileLimit()
   );
 }
 
@@ -279,7 +309,7 @@ export async function loadFromDirectoryHandle(
   if (!globalText) {
     throw new Error("Ve složce není global.cfg - nevypadá to jako mapa OMSI 2.");
   }
-  return buildMap(dir.name, globalText, tileTexts, "", terrains);
+  return buildMap(dir.name, globalText, tileTexts, "", terrains, undefined, getRenderTileLimit());
 }
 
 /**

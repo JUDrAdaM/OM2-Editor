@@ -322,11 +322,30 @@ export function buildMap(
   tileTexts: Map<string, string>,
   rootPath = "",
   terrains?: Map<string, ArrayBuffer>,
-  includeTile?: (tileX: number, tileY: number) => boolean
+  includeTile?: (tileX: number, tileY: number) => boolean,
+  maxTiles = 0
 ): OmsiMap {
   const g = parseGlobalCfg(globalText);
+  const totalTiles = g.tiles.length;
+
+  // Výběr dlaždic k načtení. Explicitní `includeTile` má přednost. Jinak u
+  // velkých map (více než `maxTiles`) vezmeme jen shluk kolem středu - renderovat
+  // stovky dlaždic najednou (600+, 3000+ objektů) jinak přetíží GPU/paměť a
+  // aplikace spadne. Ukládání je bezpečné: zapisují se jen změněné dlaždice a
+  // global.cfg se nepřepisuje, takže nenačtené dlaždice zůstanou beze změny.
+  let selected = g.tiles;
+  if (!includeTile && maxTiles > 0 && g.tiles.length > maxTiles) {
+    const cx = g.tiles.reduce((a, t) => a + t.tileX, 0) / g.tiles.length;
+    const cy = g.tiles.reduce((a, t) => a + t.tileY, 0) / g.tiles.length;
+    selected = [...g.tiles]
+      .sort((a, b) =>
+        ((a.tileX - cx) ** 2 + (a.tileY - cy) ** 2) -
+        ((b.tileX - cx) ** 2 + (b.tileY - cy) ** 2))
+      .slice(0, maxTiles);
+  }
+
   const tiles: MapTile[] = [];
-  for (const t of g.tiles) {
+  for (const t of selected) {
     if (includeTile && !includeTile(t.tileX, t.tileY)) continue;
     const text = tileTexts.get(t.fileName) ?? "";
     const tile = parseTile(text, t.tileX, t.tileY, t.fileName);
@@ -343,6 +362,7 @@ export function buildMap(
     rootName,
     rootPath,
     tiles,
+    totalTiles,
     globalSections: g.sections,
     groundTex: g.groundTex,
   };

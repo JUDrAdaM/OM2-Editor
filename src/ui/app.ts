@@ -446,6 +446,8 @@ export class EditorApp {
   }
 
   loadMap(map: OmsiMap, status: string) {
+    // Starší zdroje (JSON z URL) nemusí mít totalTiles - dorovnej.
+    if (typeof map.totalTiles !== "number") map.totalTiles = map.tiles.length;
     this.map = map;
     this.viewport.setAssetSource(createAssetSource(map));
     this.viewport.setMap(map);
@@ -457,14 +459,25 @@ export class EditorApp {
     this.renderPaintPalette();
     this.renderInspector(null);
     this.updateDirty();
-    this.setStatus(status);
+    // U velké mapy se renderuje jen shluk kolem středu (anti-crash) - dej vědět.
+    if (map.totalTiles > map.tiles.length) {
+      this.setStatus(
+        `${status} - velká mapa: zobrazeno ${map.tiles.length} z ${map.totalTiles} dlaždic (střed). ` +
+        `Limit změníš v Nastavení. Ukládají se jen upravené dlaždice, zbytek mapy zůstává beze změny.`
+      );
+    } else {
+      this.setStatus(status);
+    }
   }
 
   private updateStats() {
     if (!this.map) return;
     const o = this.map.tiles.reduce((a, t) => a + t.objects.length, 0);
     const s = this.map.tiles.reduce((a, t) => a + t.splines.length, 0);
-    this.statsEl.textContent = `${this.map.tiles.length} dlaždic · ${o} obj · ${s} splajnů`;
+    const tc = this.map.totalTiles > this.map.tiles.length
+      ? `${this.map.tiles.length}/${this.map.totalTiles} dlaždic`
+      : `${this.map.tiles.length} dlaždic`;
+    this.statsEl.textContent = `${tc} · ${o} obj · ${s} splajnů`;
   }
 
   // ---------- Palety ----------

@@ -715,6 +715,35 @@ export class Viewport {
     this.onStatus?.(`Modely načteny (${ok}/${list.length}).`);
   }
 
+  /**
+   * Zajistí, že model .sco je načtený v `loadedModels` - a když ne, dotáhne ho a
+   * přestaví scénu. Volá se při umísťování vlastního objektu (tlačítko „Umístit"
+   * / procházení): loadModels() běží jen při otevření mapy, takže nově přidaná
+   * cesta by jinak zůstala jen jako šedý box. Idempotentní (ModelCache dedupuje).
+   */
+  private async ensureModel(path: string | null): Promise<void> {
+    if (!path || !this.modelCache || this.loadedModels.has(path)) return;
+    const map = this.currentMap;
+    const m = await this.modelCache.get(path);
+    if (this.currentMap !== map) return;          // mezitím se přepnula mapa
+    if (this.loadedModels.has(path)) return;       // doplnil mezitím loadModels()
+    this.loadedModels.set(path, m);
+    this.build();
+    this.restoreSelectionVisual();
+  }
+
+  /** Obdoba ensureModel pro splajn (.sli) - při stavbě vlastní silnice. */
+  private async ensureSpline(path: string | null): Promise<void> {
+    if (!path || !this.splineCache || this.loadedSplines.has(path)) return;
+    const map = this.currentMap;
+    const sp = await this.splineCache.get(path);
+    if (this.currentMap !== map) return;
+    if (this.loadedSplines.has(path)) return;
+    this.loadedSplines.set(path, sp);
+    this.build();
+    this.restoreSelectionVisual();
+  }
+
   private build() {
     const map = this.currentMap;
     if (!map) return;
@@ -1370,12 +1399,15 @@ export class Viewport {
     this.beginEdit(tileIndex);
     const newObj = createObject(t, this.placePath, maxId(this.currentMap) + 1, lx, ly, 0, templateSection);
     const objectIndex = t.objects.indexOf(newObj);
+    const placedPath = this.placePath;
     this.placePath = null; this.renderer.domElement.style.cursor = "";
     this.build();
     this.commitEdit();
     this.selectObject(tileIndex, objectIndex, newObj);
     this.onStatus?.("Objekt přidán.");
     this.onChange?.(this.selection);
+    // Kdyby model ještě nebyl v cache (rychlý klik), dotáhni ho a přestav.
+    void this.ensureModel(placedPath);
   }
 
   // ---------- Zvýraznění ----------
@@ -1445,6 +1477,7 @@ export class Viewport {
   setPlaceMode(path: string | null) {
     if (path) this.clearTools();
     this.placePath = path;
+    void this.ensureModel(path); // přednačti model, ať se objekt po kliknutí hned zobrazí
     if (path) this.detachGizmo(); else this.attachGizmo();
     this.renderer.domElement.style.cursor = path ? "crosshair" : "";
     this.onStatus?.(path ? `Umísťování: klikni na terén (${path.split("\\").pop()}). Esc zruší.` : "Umísťování zrušeno.");
@@ -1462,6 +1495,7 @@ export class Viewport {
     this.roadStart = null;
     this.lastRoad = null;
     this.roadHeading = null;
+    void this.ensureSpline(path); // přednačti profil splajnu, ať silnice není jen žlutá čára
     if (path) this.detachGizmo(); else this.attachGizmo();
     this.renderer.domElement.style.cursor = path ? "crosshair" : "";
     this.onStatus?.(path
@@ -1547,6 +1581,7 @@ export class Viewport {
     // Zřetězení: předchozí segment ukazuje na nový.
     if (this.lastRoad) setSplineNext(this.currentMap.tiles[this.lastRoad.tileIndex], this.lastRoad.spline, newId);
     this.build();
+    void this.ensureSpline(this.roadPath); // dotáhni profil, pokud ještě není v cache
     this.commitEdit();
     this.lastRoad = { tileIndex, spline: sp };
     this.roadStart = { wx, wy };      // navazuj z konce

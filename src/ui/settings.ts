@@ -8,6 +8,9 @@ import {
   getOmsiRoot,
   pickOmsiRoot,
   isElectronApp,
+  getRenderTileLimit,
+  setRenderTileLimit,
+  DEFAULT_TILE_LIMIT,
   type UpdateStatus,
 } from "../fs/loader";
 import {
@@ -133,6 +136,32 @@ export class SettingsDialog {
     if (!isElectronApp()) changeBtn.disabled = true;
     changeRow.append(changeBtn);
     bodyEl.append(changeRow);
+
+    // --- Sekce: Výkon (limit renderovaných dlaždic u velkých map) ---
+    bodyEl.append(el("div", "modal-section-title", "Výkon"));
+    const tileRow = el("div", "set-row");
+    tileRow.append(el("div", "set-key", "Limit dlaždic velkých map"));
+    const tileVal = el("div", "set-val");
+    const tileInput = el("input", "edit-input") as HTMLInputElement;
+    tileInput.type = "number"; tileInput.min = "0"; tileInput.step = "10";
+    tileInput.style.width = "90px";
+    tileInput.value = String(getRenderTileLimit());
+    tileInput.title = "0 = bez limitu (může spadnout u velkých map)";
+    const tileStatus = el("span", "set-badge", "");
+    const applyTileLimit = () => {
+      let n = parseInt(tileInput.value, 10);
+      if (!Number.isFinite(n) || n < 0) n = DEFAULT_TILE_LIMIT;
+      setRenderTileLimit(n);
+      tileInput.value = String(n);
+      tileStatus.textContent = "uloženo - projeví se při příštím otevření mapy";
+    };
+    tileInput.addEventListener("change", applyTileLimit);
+    tileVal.append(tileInput, tileStatus);
+    tileRow.append(tileVal);
+    bodyEl.append(tileRow);
+    bodyEl.append(el("div", "hint",
+      "U map nad tento počet dlaždic se zobrazí jen shluk kolem středu (jinak hrozí pád). " +
+      "0 = načíst vše. Mění se jen zobrazení; ukládají se pouze upravené dlaždice."));
 
     // --- Sekce: Klávesové zkratky (vlastní bindy) ---
     bodyEl.append(el("div", "modal-section-title", "Klávesové zkratky"));
