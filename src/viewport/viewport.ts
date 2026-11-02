@@ -15,9 +15,7 @@ import type { AssetSource, LoadedModel } from "./models";
 import { SplineCache, appendSplineGeometry, buildMergedSplineMeshes, splineCenterline, splineSampleAt, appendPathLines, buildPathLineMeshes } from "./splines";
 import type { LoadedSpline, SplineMergeBucket } from "./splines";
 import { runPool } from "../util/async";
-
-/** Max. souběžně načítaných assetů (bounded pool - brání I/O zahlcení u velkých map). */
-const ASSET_CONCURRENCY = 24;
+import { GRAPHICS_SETTINGS_EVENT, getGraphicsSettings, type GraphicsSettings } from "./graphics";
 
 function tileHeight(t: MapTile, x: number, y: number): number {
   return t.terrain ? terrainHeightAt(t.terrain, x, y, t.tileSize ?? TILE_SIZE) : 0;
@@ -96,7 +94,8 @@ export class Viewport {
    *  jen zjednodušená osová čára (LOD). Zvolena tak, aby běžná editace i přehled
    *  malé/střední mapy zůstaly detailní a LOD naskočil u vzdáleného pohledu přes
    *  velkou mapu. */
-  private static readonly LOD_DETAIL_DIST = 3000;
+  private lodDetailDistance = 3000;
+  private assetConcurrency = 12;
 
   // Historie úprav (undo/redo): snapshot sekcí dotčené dlaždice před/po editaci.
   // Sekce jsou zdroj pravdy, takže obnovení + deriveTile + build vrátí přesný stav.
@@ -192,7 +191,7 @@ export class Viewport {
     this.camera = new THREE.PerspectiveCamera(55, w / h, 1, 20000);
     this.camera.position.set(300, 350, 450);
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.applyGraphicsSettings(getGraphicsSettings());
     this.renderer.setSize(w, h);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -256,12 +255,29 @@ export class Viewport {
     window.addEventListener("pointermove", this.onPointerMove);
     window.addEventListener("pointerup", this.onPointerUp);
     window.addEventListener("resize", this.onResize);
+    window.addEventListener(GRAPHICS_SETTINGS_EVENT, this.onGraphicsSettingsChanged);
     window.addEventListener("keydown", this.onCamKeyDown);
     window.addEventListener("keyup", this.onCamKeyUp);
     window.addEventListener("blur", () => { this.camDirs.clear(); });
     if (import.meta.env?.DEV) (window as unknown as { __vp?: Viewport }).__vp = this;
     this.animate();
   }
+
+  private applyGraphicsSettings(settings: GraphicsSettings) {
+    this.assetConcurrency = settings.assetConcurrency;
+    this.lodDetailDistance = settings.splineDetailDistance;
+    // Keep the drawing buffer at or below 2× CSS resolution even when users
+    // choose a high render scale on a high-DPI display. This avoids multiplying
+    // an already large map's framebuffer into a VRAM-related context loss.
+    this.renderer.setPixelRatio(Math.min((window.devicePixelRatio || 1) * settings.renderScale, 2));
+    this.renderer.setSize(this.container.clientWidth, this.container.clientHeight);
+  }
+
+  private onGraphicsSettingsChanged = (event: Event) => {
+    const settings = (event as CustomEvent<GraphicsSettings>).detail;
+    if (!settings) return;
+    this.applyGraphicsSettings(settings);
+  };
 
   // ---------- Transformační gizmo ----------
 
@@ -326,14 +342,14 @@ export class Viewport {
       // Pořadí YXZ odpovídá OMSI heading·pitch·bank (viz setObjMatrix).
       p.rotation.set(
         THREE.MathUtils.degToRad(o.rotX),
-        THREE.MathUtils.degToRad(o.rotZ),
+        THREE.MathUtils.degToRad(-o.rotZ),
         THREE.MathUtils.degToRad(-o.rotY),
         "YXZ"
       );
     } else {
       const s = sel.spline;
       p.position.copy(worldPos(t.tileX, t.tileY, s.x, s.y, s.z, this.tileSize));
-      p.rotation.set(0, THREE.MathUtils.degToRad(s.rotZ), 0, "YXZ");
+      p.rotation.set(0, THREE.MathUtils.degToRad(-s.rotZ), 0, "YXZ");
     }
     p.scale.set(1, 1, 1);
     p.updateMatrixWorld();
@@ -385,7 +401,7 @@ export class Viewport {
       setObjectField(t, o, "z", round3(p.position.y - terrainBase));
       if (this.gizmoMode === "rotate") {
         const e = p.rotation; // order YXZ
-        let rz = THREE.MathUtils.radToDeg(e.y) % 360; if (rz < 0) rz += 360;
+        let rz = -THREE.MathUtils.radToDeg(e.y) % 360; if (rz < 0) rz += 360;
         setObjectField(t, o, "rotZ", round3(rz));
         setObjectField(t, o, "rotX", round3(THREE.MathUtils.radToDeg(e.x)));
         setObjectField(t, o, "rotY", round3(-THREE.MathUtils.radToDeg(e.z)));
@@ -400,7 +416,7 @@ export class Viewport {
       setSplineField(t, s, "y", ly);
       setSplineField(t, s, "z", round3(p.position.y));
       if (this.gizmoMode === "rotate") {
-        let rz = THREE.MathUtils.radToDeg(p.rotation.y) % 360; if (rz < 0) rz += 360;
+        let rz = -THREE.MathUtils.radToDeg(p.rotation.y) % 360; if (rz < 0) rz += 360;
         setSplineField(t, s, "rotZ", round3(rz));
       }
       // Mesh dlaždice přestavíme až po puštění gizma (onGizmoDragChanged) - při
@@ -456,7 +472,7 @@ export class Viewport {
     if (!this.assetSrc || !map || !map.rootName) return;
     const tiles = map.tiles.filter((t) => t.terrain);
     await runPool(
-      tiles, ASSET_CONCURRENCY,
+      tiles, this.assetConcurrency,
       async (t) => {
         const path = `maps/${map.rootName}/${t.fileName}.LM.bmp`;
         let buf: ArrayBuffer | null = null;
@@ -497,7 +513,7 @@ export class Viewport {
       }
     }
     await runPool(
-      [...want.entries()], ASSET_CONCURRENCY,
+      [...want.entries()], this.assetConcurrency,
       async ([key, { scoDir, texName }]) => {
         const found = await tryReadNamed(this.assetSrc!, textureCandidates(scoDir, texName));
         if (!found || token !== this.treeTexToken) return;
@@ -632,7 +648,7 @@ export class Viewport {
     // splajny, vzdálenější jen zjednodušenou osovou čáru → v overview drasticky
     // méně draw callů splajnů (1/dlaždici místo desítek).
     const camPos = this.camera.position;
-    const lodDist2 = Viewport.LOD_DETAIL_DIST * Viewport.LOD_DETAIL_DIST;
+    const lodDist2 = this.lodDetailDistance * this.lodDetailDistance;
 
     let visible = 0;
     for (let ti = 0; ti < this.tileGroups.length; ti++) {
@@ -722,7 +738,7 @@ export class Viewport {
     const list = [...paths];
     // Bounded pool: nespouštět stovky souběžných čtení najednou.
     await runPool(
-      list, ASSET_CONCURRENCY,
+      list, this.assetConcurrency,
       async (p) => {
         const sp = await this.splineCache!.get(p);
         if (token === this.splineLoadToken) this.loadedSplines.set(p, sp);
@@ -751,7 +767,7 @@ export class Viewport {
     // Bounded pool: u velkých map (stovky unikátních .sco) jinak vznikne
     // desetitisíce souběžných čtení → zahlcení I/O a pád. Postup hlásíme.
     await runPool(
-      list, ASSET_CONCURRENCY,
+      list, this.assetConcurrency,
       async (p) => {
         const m = await this.modelCache!.get(p);
         if (token === this.loadToken) this.loadedModels.set(p, m);
@@ -812,7 +828,7 @@ export class Viewport {
     this.tileGroups = new Array(map.tiles.length);
 
     const tileMat = new THREE.MeshStandardMaterial({ color: 0x171d26, roughness: 1 });
-    const edgeMat = new THREE.LineBasicMaterial({ color: 0x2f3b4d });
+    const edgeMat = new THREE.LineBasicMaterial({ color: 0x66798b, transparent: true, opacity: 0.35 });
 
     const dummy = new THREE.Object3D();
     const dummyA = new THREE.Object3D();
@@ -871,7 +887,7 @@ export class Viewport {
       const attachMat = pModel?.attachments[a.attachIndex] ?? new THREE.Matrix4();
       const child = parent.mat.clone()
         .multiply(attachMat)
-        .multiply(new THREE.Matrix4().makeRotationY(THREE.MathUtils.degToRad(a.heading)));
+        .multiply(new THREE.Matrix4().makeRotationY(THREE.MathUtils.degToRad(-a.heading)));
       if (a.id != null && !recordPose.has(a.id)) recordPose.set(a.id, { mat: child, path: a.path });
       return child;
     };
@@ -928,14 +944,44 @@ export class Viewport {
       edges.rotation.x = -Math.PI / 2; edges.position.copy(center);
       group.add(edges);
 
+      // OMSI stores water separately from .map in a 20-byte .map.water file:
+      // four corner heights over the tile. Vertex order is north-west,
+      // north-east, south-west, south-east (shared edges match adjacent tiles).
+      if (t.waterCorners) {
+        const positions = new Float32Array(12);
+        const uvs = new Float32Array([0, 1, 1, 1, 0, 0, 1, 0]);
+        const coords: [number, number, number][] = [
+          [0, this.tileSize, t.waterCorners[0]],
+          [this.tileSize, this.tileSize, t.waterCorners[1]],
+          [0, 0, t.waterCorners[2]],
+          [this.tileSize, 0, t.waterCorners[3]],
+        ];
+        coords.forEach(([x, y, h], i) => {
+          const p = worldPos(t.tileX, t.tileY, x, y, h + 0.03, this.tileSize);
+          positions.set([p.x, p.y, p.z], i * 3);
+        });
+        const waterGeo = new THREE.BufferGeometry();
+        waterGeo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+        waterGeo.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
+        waterGeo.setIndex([0, 2, 1, 1, 2, 3]);
+        waterGeo.computeVertexNormals();
+        const water = new THREE.Mesh(waterGeo, new THREE.MeshBasicMaterial({
+          color: 0x438ba8, transparent: true, opacity: 0.72,
+          depthWrite: false, side: THREE.DoubleSide,
+        }));
+        water.renderOrder = 1;
+        group.add(water);
+      }
+
       // Objekty této dlaždice zařaď do globálních kbelíků dle cesty. Načtené →
       // model, jinak box.
       for (let oi = 0; oi < t.objects.length; oi++) {
         const o = t.objects[oi];
         const model = this.loadedModels.get(o.path);
-        const absolute = model ? model.absoluteHeight : false;
-        // Objekt mimo svoji dlaždici a NEabsolutní → OMSI ho nekreslí.
-        if (this.outOfTile(o) && !absolute) continue;
+        // OMSI mapy mohou uložit objekt v sousední dlaždici se souřadnicí za
+        // hranicí jeho souborové dlaždice. Pozici vždy skládáme z původu
+        // souborové dlaždice + lokálních X/Y; rozsah lokální souřadnice
+        // proto není důvod objekt zahodit.
         if (model) { let a = objByPath.get(o.path); if (!a) { a = []; objByPath.set(o.path, a); } a.push({ ti, oi, o }); }
         else boxEntries.push({ ti, oi, o });
       }
@@ -1013,7 +1059,7 @@ export class Viewport {
         const t = map.tiles[e.ti];
         const h = tileHeight(t, e.o.x, e.o.y);
         dummy.position.copy(worldPos(t.tileX, t.tileY, e.o.x, e.o.y, h + e.o.z + OBJ_H, this.tileSize));
-        dummy.rotation.set(0, THREE.MathUtils.degToRad(e.o.rotZ), 0);
+        dummy.rotation.set(0, THREE.MathUtils.degToRad(-e.o.rotZ), 0);
         dummy.scale.set(1, 1, 1);
         dummy.updateMatrix();
         inst.setMatrixAt(k, dummy.matrix);
@@ -1335,13 +1381,13 @@ export class Viewport {
     // Jinak objekt stojí na terénu: výška = terén + o.z.
     const baseY = absolute ? o.z : tileHeight(t, o.x, o.y) + o.z;
     // OMSI je Z-up (X,Y vodorovně, Z výška); mapování map→three je vlastní rotace:
-    //   rotZ (heading, kolem svislé) → three Y
+    //   rotZ (heading clockwise from north) → three -Y because north is -Z
     //   rotX (pitch, kolem mapové X) → three X
     //   rotY (bank,  kolem mapové Y) → three −Z
     // Pořadí jako v OMSI: heading · pitch · bank. Pro objekty bez náklonu
     // (rotX=rotY=0) je výsledek shodný s dřívější čistou rotací kolem Y.
     const m = dummy.matrix;
-    m.makeRotationY(THREE.MathUtils.degToRad(o.rotZ + originRotY));
+    m.makeRotationY(THREE.MathUtils.degToRad(-o.rotZ + originRotY));
     if (o.rotX) m.multiply(this._rTmp.makeRotationX(THREE.MathUtils.degToRad(o.rotX)));
     if (o.rotY) m.multiply(this._rTmp.makeRotationZ(THREE.MathUtils.degToRad(-o.rotY)));
     // Per-instance velikost stromu (přirozený les): škáluj billboard podle přepisu
@@ -1356,12 +1402,6 @@ export class Viewport {
       }
     }
     m.setPosition(worldPos(t.tileX, t.tileY, o.x, o.y, baseY, this.tileSize));
-  }
-
-  /** Objekt leží mimo svoji dlaždici? Některé OMSI mapy ukládají i přesah do sousední. */
-  private outOfTile(o: MapObject): boolean {
-    const e = this.tileSize + 1e-3;
-    return o.x < -1e-3 || o.x > e || o.y < -1e-3 || o.y > e;
   }
 
   /** Spočítá matice instancí pro jednu řadu [splineAttachement] (podél splajnu + chain). */
@@ -1408,7 +1448,7 @@ export class Viewport {
         smp.worldY + a.height,
         -(t.tileY * this.tileSize + smp.ly + a.lateral * smp.ry)
       );
-      dummy.rotation.set(0, THREE.MathUtils.degToRad(smp.headingDeg + a.heading), 0);
+      dummy.rotation.set(0, THREE.MathUtils.degToRad(-(smp.headingDeg + a.heading)), 0);
       dummy.scale.set(1, 1, 1);
       dummy.updateMatrix();
       out.push(dummy.matrix.clone());
@@ -2062,7 +2102,7 @@ export class Viewport {
   private async loadPaintMasks(layerIndex: number, token: number): Promise<void> {
     if (!this.assetSrc || !this.currentMap) return;
     const tiles = this.currentMap.tiles.map((tile, ti) => ({ tile, ti }));
-    await runPool(tiles, ASSET_CONCURRENCY, async ({ tile, ti }) => {
+    await runPool(tiles, this.assetConcurrency, async ({ tile, ti }) => {
       const key = this.paintMaskKey(ti, layerIndex);
       if (this.paintMasks.has(key)) return;
       const folder = (this.currentMap!.rootName || "").replace(/[\\/]/g, "");

@@ -1,5 +1,6 @@
-import { buildMap, parseGlobalCfg, serializeTile, serializeGlobalCfg } from "../omsi/map";
+import { buildMap, parseGlobalCfg, selectMapTileEntries, serializeTile, serializeGlobalCfg } from "../omsi/map";
 import type { OmsiMap, TerrainData } from "../omsi/types";
+import { runPool } from "../util/async";
 
 /** Serializuje výškmapu dlaždice do binárního *.terrain (int32 dílky + float32 výšky LE). */
 function serializeTerrain(t: TerrainData): Uint8Array {
@@ -44,6 +45,7 @@ type MapFolderResult =
       globalText: string;
       tiles: Record<string, string>;
       terrains: Record<string, Uint8Array>;
+      waters?: Record<string, Uint8Array>;
     };
 
 export interface OmsiMapEntry {
@@ -68,9 +70,10 @@ interface OmsiAPI {
   ) => Promise<{ root?: string | null; maps: OmsiMapEntry[]; error?: string }>;
   openMapByFolder?: (
     omsiRoot: string | null,
-    folder: string
+    folder: string,
+    maxTiles: number
   ) => Promise<MapFolderResult | { error: string }>;
-  openMapFolder: () => Promise<MapFolderResult>;
+  openMapFolder: (maxTiles: number) => Promise<MapFolderResult>;
   saveTiles: (
     rootPath: string,
     tiles: { fileName: string; content: string }[]
@@ -278,10 +281,15 @@ export async function listOmsiMaps(
 function buildFromFolderResult(data: Exclude<MapFolderResult, null | { error: string }>): OmsiMap {
   dirHandle = null;
   const terrains = new Map<string, ArrayBuffer>();
+  const waters = new Map<string, ArrayBuffer>();
   for (const [name, bytes] of Object.entries(data.terrains ?? {})) {
     const u8 = bytes as Uint8Array;
     const ab = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
     terrains.set(name, ab);
+  }
+  for (const [name, bytes] of Object.entries(data.waters ?? {})) {
+    const u8 = bytes as Uint8Array;
+    waters.set(name, u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer);
   }
   return buildMap(
     data.rootName,
@@ -290,7 +298,8 @@ function buildFromFolderResult(data: Exclude<MapFolderResult, null | { error: st
     data.rootPath,
     terrains,
     undefined,
-    getRenderTileLimit()
+    getRenderTileLimit(),
+    waters
   );
 }
 
@@ -302,7 +311,7 @@ export async function openMapByFolder(
   if (!window.omsiAPI?.openMapByFolder) {
     throw new Error("Tato funkce je dostupná jen v desktop aplikaci.");
   }
-  const data = await window.omsiAPI.openMapByFolder(omsiRoot, folder);
+  const data = await window.omsiAPI.openMapByFolder(omsiRoot, folder, getRenderTileLimit());
   if (!data) throw new Error("Mapu se nepodařilo načíst.");
   if ("error" in data) throw new Error(data.error);
   return buildFromFolderResult(data);
@@ -311,7 +320,7 @@ export async function openMapByFolder(
 /** Otevře složku mapy OMSI 2 a vrátí rozparsovaný model. */
 export async function openMapFolder(): Promise<OmsiMap | null> {
   if (window.omsiAPI?.isElectron) {
-    const data = await window.omsiAPI.openMapFolder();
+    const data = await window.omsiAPI.openMapFolder(getRenderTileLimit());
     if (!data) return null;
     if ("error" in data) throw new Error(data.error);
     return buildFromFolderResult(data);
@@ -336,6 +345,10 @@ export async function loadFromDirectoryHandle(
   let globalText = "";
   const tileTexts = new Map<string, string>();
   const terrains = new Map<string, ArrayBuffer>();
+  const waters = new Map<string, ArrayBuffer>();
+  const tileFiles = new Map<string, FileSystemFileHandle>();
+  const terrainFiles = new Map<string, FileSystemFileHandle>();
+  const waterFiles = new Map<string, FileSystemFileHandle>();
 
   // @ts-expect-error - .entries() je async iterable, ne vždy v lib.d.ts
   for await (const [name, handle] of dir.entries()) {
@@ -344,16 +357,32 @@ export async function loadFromDirectoryHandle(
     if (lower === "global.cfg") {
       globalText = await readFileText(handle as FileSystemFileHandle);
     } else if (lower.endsWith(".map.terrain")) {
-      const file = await (handle as FileSystemFileHandle).getFile();
-      terrains.set(name.slice(0, -".terrain".length), await file.arrayBuffer());
+      terrainFiles.set(name.slice(0, -".terrain".length), handle as FileSystemFileHandle);
+    } else if (lower.endsWith(".map.water")) {
+      waterFiles.set(name.slice(0, -".water".length), handle as FileSystemFileHandle);
     } else if (lower.endsWith(".map")) {
-      tileTexts.set(name, await readFileText(handle as FileSystemFileHandle));
+      tileFiles.set(name, handle as FileSystemFileHandle);
     }
   }
   if (!globalText) {
     throw new Error("Ve složce není global.cfg - nevypadá to jako mapa OMSI 2.");
   }
-  return buildMap(dir.name, globalText, tileTexts, "", terrains, undefined, getRenderTileLimit());
+  const selected = selectMapTileEntries(parseGlobalCfg(globalText).tiles, getRenderTileLimit());
+  await runPool(selected, 8, async (entry) => {
+    const tileHandle = tileFiles.get(entry.fileName);
+    if (tileHandle) tileTexts.set(entry.fileName, await readFileText(tileHandle));
+    const terrainHandle = terrainFiles.get(entry.fileName);
+    if (terrainHandle) {
+      const file = await terrainHandle.getFile();
+      terrains.set(entry.fileName, await file.arrayBuffer());
+    }
+    const waterHandle = waterFiles.get(entry.fileName);
+    if (waterHandle) {
+      const file = await waterHandle.getFile();
+      waters.set(entry.fileName, await file.arrayBuffer());
+    }
+  });
+  return buildMap(dir.name, globalText, tileTexts, "", terrains, undefined, getRenderTileLimit(), waters);
 }
 
 /**
@@ -401,16 +430,19 @@ export async function loadMapFromOmsiDev(
   // Načti .map + .map.terrain jen pro vybrané dlaždice (paralelně).
   const tileTexts = new Map<string, string>();
   const terrains = new Map<string, ArrayBuffer>();
+  const waters = new Map<string, ArrayBuffer>();
   await Promise.all(chosen.map(async (t) => {
     const mapBuf = await fetchBuf(t.fileName);
     if (mapBuf) tileTexts.set(t.fileName, decodeOmsi(mapBuf));
     const terrBuf = await fetchBuf(t.fileName + ".terrain");
     if (terrBuf) terrains.set(t.fileName, terrBuf);
+    const waterBuf = await fetchBuf(t.fileName + ".water");
+    if (waterBuf) waters.set(t.fileName, waterBuf);
   }));
 
   const rootName = relFolder.split(/[\\/]/).pop() || relFolder;
   return buildMap(rootName, globalText, tileTexts, "", terrains,
-    (x, y) => allow.has(`${x},${y}`));
+    (x, y) => allow.has(`${x},${y}`), 0, waters);
 }
 
 /** Odvodí kořen OMSI z cesty mapy (…\OMSI 2\maps\<mapa> → …\OMSI 2). */

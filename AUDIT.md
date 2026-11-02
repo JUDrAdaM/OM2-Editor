@@ -29,6 +29,55 @@ Berlin-Spandau matches the owner's reported reference (~369 tiles / 30,310 objec
 
 ## Confirmed defects
 
+### D8 — Animation pivots were incorrectly applied to static mesh geometry — FIXED (2026-11-02)
+- **Where:** `src/omsi/o3d.ts`, `src/viewport/models.ts`.
+- **Root cause:** the parser applied the `0x79` matrix to every vertex. The
+  format documentation identifies this matrix as the mesh pivot used by
+  `origin_from_mesh` animations; mesh vertices are already in the parent
+  object's frame. Applying the pivot during ordinary rendering moves or rotates
+  geometry away from the `[object]` position, which can produce displaced
+  buildings and long stray mesh fragments.
+- **Fix:** consume the 16 matrix floats but do not transform mesh positions;
+  likewise, do not bake SCO `origin_trans` / `origin_rot_*` animation pivots into
+  static geometry.
+- **Correction to D3 / D7 notes below:** the earlier conclusion that applying
+  `0x79` fixed misplaced geometry was incorrect. The matrix is still relevant
+  when implementing animated pivots, but it is not a static mesh transform.
+- **Verification:** TypeScript/Vite production build passes. Needs visual
+  comparison in the local Electron app on Berlin-Spandau and Líšeň.
+
+### D9 — `[splinehelper]` objects treated their Z as terrain-relative — FIXED (2026-11-02)
+- **Where:** `src/omsi/sco.ts` (`ScoInfo.absHeight`).
+- **Root cause:** only `[absheight]` and `[path]` marked a scenery object as
+  absolute-height. Crossings/switches that declare `[splinehelper]` also store
+  absolute Z; adding the local terrain height shifted them vertically a second
+  time, most noticeably on uneven terrain.
+- **Fix:** `[splinehelper]` now enables the same absolute-height placement.
+- **Verification:** TypeScript/Vite production build passes; visual comparison
+  on the user's crossing examples remains necessary.
+
+### D10 — Declared tile water was never loaded or rendered — FIXED (2026-11-02)
+- **Where:** Electron/browser map loaders, `parseWater`, and `Viewport.build()`.
+- **Root cause:** `.map.water` was not included in file loading or scene data.
+- **Fix:** load the 20-byte tile water record (count + four corner heights) and
+  render a translucent surface using the four heights. Tile edge guides were
+  also softened because the previous dark outlines dominated whole-map views.
+- **Verification:** production build passes; corner order was checked against
+  matching heights on neighboring Berlin-Spandau tiles. Visual inspection in
+  the editor remains necessary.
+
+### D11 — Map headings rotated objects the wrong way — FIXED (2026-11-02)
+- **Where:** `src/viewport/viewport.ts` object, spline gizmo, and attachment transforms.
+- **Root cause:** OMSI heading is clockwise from north. In the Three.js scene,
+  north is `-Z`, and O3D forward (`+Z`) is converted to `-Z`; Three.js therefore
+  needs a negative Y rotation for a positive OMSI heading. The renderer used a
+  positive angle, making rotated models face the opposite direction.
+- **Fix:** negate heading when composing model/attachment transforms and negate
+  it again when reading the gizmo angle back to map data.
+- **Verification:** vector conversion was checked at 0/90/180/270 degrees; the
+  installed maps contain nonzero heading on 119,472/125,605 Líšeň objects and
+  27,056/29,450 Berlin-Spandau objects. Production build passes.
+
 ### D1 — Unbounded concurrent asset loading → freeze/crash on large maps  — FIXED
 - **Where:** `Viewport.loadModels()` / `loadSplines()` (`src/viewport/viewport.ts`).
 - **Root cause:** `Promise.all(list.map(...))` over every unique model (889 on

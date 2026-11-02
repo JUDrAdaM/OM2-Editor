@@ -282,6 +282,20 @@ export function parseTile(
   return tile;
 }
 
+/** OMSI .map.water: uint32 surface count followed by four float32 corner heights. */
+export function parseWater(buf: ArrayBuffer): [number, number, number, number] | undefined {
+  if (buf.byteLength < 20) return undefined;
+  const view = new DataView(buf);
+  if (view.getUint32(0, true) < 1) return undefined;
+  const heights: number[] = [];
+  for (let i = 0; i < 4; i++) {
+    const h = view.getFloat32(4 + i * 4, true);
+    if (!Number.isFinite(h)) return undefined;
+    heights.push(h);
+  }
+  return heights as [number, number, number, number];
+}
+
 /** Rozparsuje global.cfg na seznam dlaždic. */
 export function parseGlobalCfg(text: string): {
   name: string;
@@ -322,6 +336,16 @@ export function parseGlobalCfg(text: string): {
   return { name, friendlyName, tiles, sections, groundTex, tileSize };
 }
 
+/** Vybere nejbližší shluk dlaždic ke středu mapy bez načítání jejich souborů. */
+export function selectMapTileEntries<T extends { tileX: number; tileY: number }>(items: T[], maxTiles: number): T[] {
+  if (maxTiles <= 0 || items.length <= maxTiles) return items;
+  const cx = items.reduce((sum, tile) => sum + tile.tileX, 0) / items.length;
+  const cy = items.reduce((sum, tile) => sum + tile.tileY, 0) / items.length;
+  return [...items].sort((a, b) =>
+    ((a.tileX - cx) ** 2 + (a.tileY - cy) ** 2) - ((b.tileX - cx) ** 2 + (b.tileY - cy) ** 2)
+  ).slice(0, maxTiles);
+}
+
 /** Sloučí global.cfg + obsah .map souborů do kompletního modelu. */
 export function buildMap(
   rootName: string,
@@ -330,7 +354,8 @@ export function buildMap(
   rootPath = "",
   terrains?: Map<string, ArrayBuffer>,
   includeTile?: (tileX: number, tileY: number) => boolean,
-  maxTiles = 0
+  maxTiles = 0,
+  waters?: Map<string, ArrayBuffer>
 ): OmsiMap {
   const g = parseGlobalCfg(globalText);
   const totalTiles = g.tiles.length;
@@ -342,13 +367,7 @@ export function buildMap(
   // global.cfg se nepřepisuje, takže nenačtené dlaždice zůstanou beze změny.
   let selected = g.tiles;
   if (!includeTile && maxTiles > 0 && g.tiles.length > maxTiles) {
-    const cx = g.tiles.reduce((a, t) => a + t.tileX, 0) / g.tiles.length;
-    const cy = g.tiles.reduce((a, t) => a + t.tileY, 0) / g.tiles.length;
-    selected = [...g.tiles]
-      .sort((a, b) =>
-        ((a.tileX - cx) ** 2 + (a.tileY - cy) ** 2) -
-        ((b.tileX - cx) ** 2 + (b.tileY - cy) ** 2))
-      .slice(0, maxTiles);
+    selected = selectMapTileEntries(g.tiles, maxTiles);
   }
 
   const tiles: MapTile[] = [];
@@ -361,6 +380,8 @@ export function buildMap(
       const terr = parseTerrain(terrainBuf);
       if (terr) tile.terrain = terr;
     }
+    const waterBuf = waters?.get(t.fileName);
+    if (waterBuf) tile.waterCorners = parseWater(waterBuf);
     tiles.push(tile);
   }
   return {

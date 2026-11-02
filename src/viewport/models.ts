@@ -183,23 +183,19 @@ function applyAlpha(mat: THREE.MeshStandardMaterial, mode: AlphaMode) {
 /** Vstupní prostor meshe: o3d i xmesh jsou Y-up (DirectX). Vertikála = coord1 (Y). */
 type MeshSpace = "o3d" | "xmesh";
 
-/** Postaví geometrii; zapeče origin (trans+rot) a seskupí trojúhelníky dle materiálu. */
-function buildGeometry(mesh: O3DMesh, originTrans: [number, number, number], originRotY: number, space: MeshSpace = "o3d"): THREE.BufferGeometry {
+/** Převede lokální osy meshe do Three.js a seskupí trojúhelníky dle materiálu. */
+function buildGeometry(mesh: O3DMesh, space: MeshSpace = "o3d"): THREE.BufferGeometry {
   const V = mesh.vertexCount, T = mesh.triangleCount;
-  const rot = THREE.MathUtils.degToRad(originRotY);
-  const cos = Math.cos(rot), sin = Math.sin(rot);
-  const [ox, oy, oz] = originTrans;
   const pos = new Float32Array(V * 3);
   for (let i = 0; i < V; i++) {
     const mx0 = mesh.positions[i * 3], my0 = mesh.positions[i * 3 + 1], mz0 = mesh.positions[i * 3 + 2];
     if (space === "xmesh") {
       // už Y-up (levotočivý DirectX) → jen převrácení Z na pravotočivý
-      pos[i * 3] = mx0 + ox; pos[i * 3 + 1] = my0 + oz; pos[i * 3 + 2] = -(mz0 + oy);
+      pos[i * 3] = mx0; pos[i * 3 + 1] = my0; pos[i * 3 + 2] = -mz0;
     } else {
-      // o3d (odscramblované) = Y-up DirectX: vertikála = coord1 (Y). origin_rot_y
-      // rotuje kolem svislé osy (Y) → horizontální rovina (x,z). Z → pravotočivý.
-      const rx = mx0 * cos + mz0 * sin, rz = -mx0 * sin + mz0 * cos;
-      pos[i * 3] = rx + ox; pos[i * 3 + 1] = my0 + oy; pos[i * 3 + 2] = -(rz + oz);
+      // O3D vrcholy jsou už v rámci rodičovského objektu. SCO origin_* a
+      // O3D 0x79 jsou animační pivoty, nikoli statické transformace meshe.
+      pos[i * 3] = mx0; pos[i * 3 + 1] = my0; pos[i * 3 + 2] = -mz0;
     }
   }
 
@@ -430,10 +426,8 @@ export async function loadModel(src: AssetSource, scoPath: string): Promise<Load
       const loaded = await loadMesh(src, scoDir, meshDef.file);
       if (!loaded) continue;
       if (deformField) applyCrossingDeform(loaded.mesh, deformField);
-      const origin: [number, number, number] = loaded.space === "o3d" ? meshDef.originTrans : [0, 0, 0];
-      const rotY = loaded.space === "o3d" ? meshDef.originRotY : 0;
       const materials = await buildMaterials(src, scoDir, loaded.mesh, meshDef.matls);
-      const geometry = buildGeometry(loaded.mesh, origin, rotY, loaded.space);
+      const geometry = buildGeometry(loaded.mesh, loaded.space);
       const material = materials.length === 1 ? materials[0] : materials;
       groupParts.push({ geometry, material });
     }

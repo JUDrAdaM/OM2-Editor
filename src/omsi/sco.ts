@@ -41,8 +41,8 @@ export interface ScoInfo {
   meshes: ScoMesh[];
   /** Billboard stromy ([tree]); pokud je neprázdné, objekt se kreslí jako billboard. */
   trees: ScoTree[];
-  /** Absolutní výška: [absheight] NEBO objekt má [path] (křižovatky, výhybky, kusy
-   *  silnic). Takový objekt se umisťuje na svoji z (bez přičtení terénu) - viz OMSI. */
+  /** Absolutní výška: [absheight], [path] nebo [splinehelper] (křižovatky,
+   *  výhybky a objekty napojené na splajny). Z je přímo světová výška bez terénu. */
   absHeight: boolean;
   /** Body [new_attachment] (pro [attachObj]): každý je seznam operací attach_trans /
    *  attach_rot_x/y/z v pořadí, jak stojí v souboru. */
@@ -80,7 +80,7 @@ export function parseSco(text: string): ScoInfo {
       curAttach = [];
       attachments.push(curAttach);
     }
-    if (n === "absheight" || n === "path") {
+    if (n === "absheight" || n === "path" || n === "splinehelper") {
       absHeight = true;
     } else if (n === "crossing_heightdeformation") {
       const f = firstVal(s);

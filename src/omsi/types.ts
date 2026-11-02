@@ -150,6 +150,8 @@ export interface MapTile {
   groundTextures: string[];
   /** Výškmapa terénu (pokud existuje *.terrain soubor). */
   terrain?: TerrainData;
+  /** Výšky hladiny vody na čtyřech rozích dlaždice (z .map.water). */
+  waterCorners?: [number, number, number, number];
   /** Dlaždice byla editována a čeká na uložení. */
   dirty: boolean;
   /** Nová dlaždice přidaná v editoru (ještě není v global.cfg na disku). Při

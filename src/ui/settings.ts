@@ -14,6 +14,10 @@ import {
   type UpdateStatus,
 } from "../fs/loader";
 import {
+  DEFAULT_GRAPHICS_SETTINGS, getGraphicsSettings, setGraphicsSettings,
+  type GraphicsSettings,
+} from "../viewport/graphics";
+import {
   allBindings, setBinding, resetBindings, comboFromEvent, conflictOf, prettyKey,
   type ActionId,
 } from "./keybindings";
@@ -161,8 +165,57 @@ export class SettingsDialog {
     bodyEl.append(tileRow);
     bodyEl.append(el("div", "hint",
       "U map nad tento počet dlaždic se zobrazí jen shluk kolem středu. Vyšší hodnota = " +
-      "víc mapy, ale těžší overview (hustá mapa). 150 je rozumné; ověřeno i 250. Když obraz " +
-      "zčerná (málo VRAM), sniž. 0 = vše. Mění se jen zobrazení; ukládají se pouze upravené dlaždice."));
+      "víc mapy a vyšší spotřeba paměti. Dlaždice mimo limit se při otevírání vůbec nenačítají. " +
+      "0 = všechny. Uloží se pouze upravené dlaždice."));
+
+    // --- Sekce: Grafika a načítání ---
+    bodyEl.append(el("div", "modal-section-title", "Grafika a načítání"));
+    const currentGraphics = getGraphicsSettings();
+    const graphicsControls = new Map<keyof GraphicsSettings, {
+      input: HTMLInputElement; display: HTMLElement; format: (n: number) => string;
+    }>();
+    const addRange = (
+      label: string, key: keyof GraphicsSettings, min: number, max: number, step: number,
+      value: number, format: (n: number) => string, hint: string
+    ) => {
+      const row = el("div", "set-row");
+      row.append(el("div", "set-key", label));
+      const val = el("div", "set-val");
+      const input = el("input", "edit-input") as HTMLInputElement;
+      input.type = "range"; input.min = String(min); input.max = String(max); input.step = String(step);
+      input.value = String(value); input.style.width = "180px";
+      const display = el("span", "set-badge", format(value));
+      graphicsControls.set(key, { input, display, format });
+      input.addEventListener("input", () => { display.textContent = format(Number(input.value)); });
+      input.addEventListener("change", () => {
+        setGraphicsSettings({ ...getGraphicsSettings(), [key]: Number(input.value) });
+        display.textContent = format(Number(input.value));
+      });
+      val.append(input, display);
+      row.append(val);
+      bodyEl.append(row, el("div", "hint", hint));
+    };
+    addRange("Rozlišení vykreslování", "renderScale", 0.5, 2, 0.1,
+      currentGraphics.renderScale, (n) => `${Math.round(n * 100)} %`,
+      "Vyšší hodnota zvýší ostrost a zátěž grafické karty; při problémech s FPS ji sniž.");
+    addRange("Souběžné načítání", "assetConcurrency", 4, 48, 4,
+      currentGraphics.assetConcurrency, (n) => `${n} úloh`,
+      "Vyšší hodnota víc zatíží procesor a disk a může zvýšit špičkovou spotřebu RAM.");
+    addRange("Detail silnic a splajnů", "splineDetailDistance", 1000, 8000, 500,
+      currentGraphics.splineDetailDistance, (n) => `${n} m`,
+      "Vyšší hodnota drží detailní geometrii dál od kamery a spotřebuje víc grafické paměti.");
+    const resetGraphics = el("button", "btn btn-sm", "Obnovit výchozí grafiku");
+    resetGraphics.addEventListener("click", () => {
+      setGraphicsSettings({ ...DEFAULT_GRAPHICS_SETTINGS });
+      for (const [key, control] of graphicsControls) {
+        const value = DEFAULT_GRAPHICS_SETTINGS[key];
+        control.input.value = String(value);
+        control.display.textContent = control.format(value);
+      }
+    });
+    const graphicsResetRow = el("div", "set-update");
+    graphicsResetRow.append(resetGraphics);
+    bodyEl.append(graphicsResetRow);
 
     // --- Sekce: Klávesové zkratky (vlastní bindy) ---
     bodyEl.append(el("div", "modal-section-title", "Klávesové zkratky"));

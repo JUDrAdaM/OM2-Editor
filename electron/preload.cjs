@@ -13,11 +13,11 @@ contextBridge.exposeInMainWorld("omsiAPI", {
   /** Vrátí seznam map ve složce maps/. */
   listMaps: (omsiRoot) => ipcRenderer.invoke("omsi:listMaps", omsiRoot),
   /** Otevře mapu podle názvu složky pod <root>/maps. */
-  openMapByFolder: (omsiRoot, folder) =>
-    ipcRenderer.invoke("omsi:openMapByFolder", omsiRoot, folder),
+  openMapByFolder: (omsiRoot, folder, maxTiles) =>
+    ipcRenderer.invoke("omsi:openMapByFolder", omsiRoot, folder, maxTiles),
 
   // --- Otevření libovolné složky dialogem + ukládání ---
-  openMapFolder: () => ipcRenderer.invoke("omsi:openMapFolder"),
+  openMapFolder: (maxTiles) => ipcRenderer.invoke("omsi:openMapFolder", maxTiles),
   saveTiles: (rootPath, tiles) => ipcRenderer.invoke("omsi:saveTiles", rootPath, tiles),
   saveTerrains: (rootPath, terrains) => ipcRenderer.invoke("omsi:saveTerrains", rootPath, terrains),
   saveMapAssets: (rootPath, assets) => ipcRenderer.invoke("omsi:saveMapAssets", rootPath, assets),

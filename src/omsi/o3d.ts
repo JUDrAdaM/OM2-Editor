@@ -12,7 +12,7 @@
 //                    (3×float pozice + 3×float normála + 2×float UV)
 //     0x49 trojúhelníky: count × (3× index + u16 materiál)
 //     0x26 materiály:    u16 count × (11 float + str8 textura)
-//     0x79 matice:       16× float (4×4, row-major, translace v řádku 3)
+//     0x79 matice:       16× float (mesh pivot pro origin_from_mesh animace)
 //     0x54 kosti:        přeskakujeme
 //
 // KLÍČOVÉ: u verze 4+ s klíčem ≠ 0xFFFFFFFF jsou vrcholy PER-VERTEX „scrambled"
@@ -101,7 +101,6 @@ export function parseO3D(buf: ArrayBuffer): O3DMesh | null {
     const idxArr: number[] = [];
     const matArr: number[] = [];
     const materials: O3DMaterial[] = [];
-    let transform: number[] | null = null;
 
     while (!c.end) {
       const tag = c.u8r();
@@ -146,8 +145,10 @@ export function parseO3D(buf: ArrayBuffer): O3DMesh | null {
           materials.push({ texture: texture.trim(), diffuse });
         }
       } else if (tag === 0x79) {
-        transform = [];
-        for (let i = 0; i < 16; i++) transform.push(c.f32());
+        // 0x79 je pivot/origin frame pro origin_from_mesh animace. Vrcholy
+        // jsou už zapsané v rámci rodičovského objektu; transformace zde by
+        // je při běžném vykreslení posunula/otočila podruhé.
+        c.skip(16 * 4);
       } else if (tag === 0x54) {
         const n = c.u16();
         for (let i = 0; i < n; i++) {
@@ -160,22 +161,6 @@ export function parseO3D(buf: ArrayBuffer): O3DMesh | null {
     }
 
     if (V <= 0 || idxArr.length === 0) return null;
-
-    // Transformační matice (0x79): aplikuj na pozice (u většiny meshů identita).
-    if (transform) {
-      const m = transform;
-      let ident = true;
-      const I = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
-      for (let i = 0; i < 16; i++) if (Math.abs(m[i] - I[i]) > 1e-4) { ident = false; break; }
-      if (!ident) {
-        for (let i = 0; i < V; i++) {
-          const o = i * 3, x = positions[o], y = positions[o + 1], z = positions[o + 2];
-          positions[o] = x * m[0] + y * m[4] + z * m[8] + m[12];
-          positions[o + 1] = x * m[1] + y * m[5] + z * m[9] + m[13];
-          positions[o + 2] = x * m[2] + y * m[6] + z * m[10] + m[14];
-        }
-      }
-    }
 
     // Vyhoď trojúhelníky s indexem mimo rozsah (jako OMSI loader).
     const T = idxArr.length / 3;

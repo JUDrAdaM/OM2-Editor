@@ -223,31 +223,68 @@ function createWindow() {
   });
 }
 
-/** Přečte složku mapy OMSI 2: global.cfg + všechny *.map dlaždice. */
-async function readMapFolder(dirPath) {
+/** Vybere shluk dlaždic kolem středu mapy bez načítání jejich obsahu. */
+function selectMapFiles(globalText, maxTiles) {
+  const all = [];
+  const re = /^\s*\[map\]\s*\r?\n([^[]*)/gim;
+  let match;
+  while ((match = re.exec(globalText))) {
+    const values = match[1].split(/\r?\n/).map((v) => v.trim()).filter(Boolean);
+    if (values.length < 3) continue;
+    const tileX = Number.parseFloat(values[0].replace(",", "."));
+    const tileY = Number.parseFloat(values[1].replace(",", "."));
+    if (Number.isFinite(tileX) && Number.isFinite(tileY)) all.push({ tileX, tileY, fileName: values[2] });
+  }
+  if (!maxTiles || all.length <= maxTiles) return all;
+  const cx = all.reduce((sum, tile) => sum + tile.tileX, 0) / all.length;
+  const cy = all.reduce((sum, tile) => sum + tile.tileY, 0) / all.length;
+  return [...all]
+    .sort((a, b) => ((a.tileX - cx) ** 2 + (a.tileY - cy) ** 2) - ((b.tileX - cx) ** 2 + (b.tileY - cy) ** 2))
+    .slice(0, maxTiles);
+}
+
+/** Přečte global.cfg a jen dlaždice potřebné pro overview. */
+async function readMapFolder(dirPath, maxTiles = 150) {
   const entries = await fs.readdir(dirPath, { withFileTypes: true });
   let globalText = "";
   /** @type {Record<string,string>} */
   const tiles = {};
   /** @type {Record<string,Uint8Array>} */
   const terrains = {};
+  /** @type {Record<string,Uint8Array>} */
+  const waters = {};
 
+  const files = new Set();
   for (const entry of entries) {
     if (!entry.isFile()) continue;
     const lower = entry.name.toLowerCase();
     if (lower === "global.cfg") {
       const buf = await fs.readFile(path.join(dirPath, entry.name));
       globalText = decodeOmsi(buf);
-    } else if (lower.endsWith(".map.terrain")) {
-      const buf = await fs.readFile(path.join(dirPath, entry.name));
-      terrains[entry.name.slice(0, -".terrain".length)] = new Uint8Array(buf);
-    } else if (lower.endsWith(".map")) {
-      const buf = await fs.readFile(path.join(dirPath, entry.name));
-      tiles[entry.name] = decodeOmsi(buf);
+    } else if (lower.endsWith(".map") || lower.endsWith(".map.terrain") || lower.endsWith(".map.water")) {
+      files.add(entry.name);
     }
   }
 
-  return { rootName: path.basename(dirPath), rootPath: dirPath, globalText, tiles, terrains };
+  const selected = selectMapFiles(globalText, Math.max(0, Number(maxTiles) || 0));
+  for (const tile of selected) {
+    if (files.has(tile.fileName)) {
+      const buf = await fs.readFile(path.join(dirPath, tile.fileName));
+      tiles[tile.fileName] = decodeOmsi(buf);
+    }
+    const terrainName = tile.fileName + ".terrain";
+    if (files.has(terrainName)) {
+      const buf = await fs.readFile(path.join(dirPath, terrainName));
+      terrains[tile.fileName] = new Uint8Array(buf);
+    }
+    const waterName = tile.fileName + ".water";
+    if (files.has(waterName)) {
+      const buf = await fs.readFile(path.join(dirPath, waterName));
+      waters[tile.fileName] = new Uint8Array(buf);
+    }
+  }
+
+  return { rootName: path.basename(dirPath), rootPath: dirPath, globalText, tiles, terrains, waters };
 }
 
 // ---------------------------------------------------------------------------
@@ -284,7 +321,7 @@ ipcMain.handle("omsi:listMaps", async (_e, omsiRoot) => {
   }
 });
 
-ipcMain.handle("omsi:openMapByFolder", async (_e, omsiRoot, folder) => {
+ipcMain.handle("omsi:openMapByFolder", async (_e, omsiRoot, folder, maxTiles) => {
   try {
     const root = omsiRoot || detectOmsiRoot();
     if (!root) return { error: "OMSI 2 nenalezeno." };
@@ -292,7 +329,7 @@ ipcMain.handle("omsi:openMapByFolder", async (_e, omsiRoot, folder) => {
     if (!path.resolve(dirPath).startsWith(path.resolve(path.join(root, "maps")))) {
       return { error: "Neplatná cesta mapy." };
     }
-    const data = await readMapFolder(dirPath);
+    const data = await readMapFolder(dirPath, maxTiles);
     if (!data.globalText) return { error: "Ve složce není global.cfg." };
     return data;
   } catch (err) {
@@ -300,7 +337,7 @@ ipcMain.handle("omsi:openMapByFolder", async (_e, omsiRoot, folder) => {
   }
 });
 
-ipcMain.handle("omsi:openMapFolder", async () => {
+ipcMain.handle("omsi:openMapFolder", async (_e, maxTiles) => {
   const result = await dialog.showOpenDialog(win, {
     title: "Vyber složku mapy OMSI 2 (obsahuje global.cfg)",
     properties: ["openDirectory"],
@@ -308,7 +345,7 @@ ipcMain.handle("omsi:openMapFolder", async () => {
   if (result.canceled || result.filePaths.length === 0) return null;
 
   const dirPath = result.filePaths[0];
-  const data = await readMapFolder(dirPath);
+  const data = await readMapFolder(dirPath, maxTiles);
   if (!data.globalText) {
     return { error: "Ve složce není global.cfg - nevypadá to jako mapa OMSI 2." };
   }
