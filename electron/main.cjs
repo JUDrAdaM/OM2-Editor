@@ -345,11 +345,38 @@ ipcMain.handle("omsi:saveTerrains", async (_e, rootPath, terrains) => {
   }
 });
 
+ipcMain.handle("omsi:saveMapAssets", async (_e, rootPath, assets) => {
+  try {
+    if (!rootPath) return { error: "Chybí cesta ke složce mapy." };
+    const root = path.resolve(rootPath);
+    let saved = 0;
+    for (const asset of assets || []) {
+      const fileName = String(asset.fileName || "");
+      const parts = fileName.split(/[\\/]+/).filter(Boolean);
+      if (parts.length < 2 || parts.some((part) => part === "." || part === "..")) {
+        return { error: "Neplatná cesta souboru mapy." };
+      }
+      const target = path.resolve(root, ...parts);
+      const rel = path.relative(root, target);
+      if (!rel || rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+        return { error: "Neplatná cesta souboru mapy." };
+      }
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.writeFile(target, Buffer.from(asset.data));
+      saved++;
+    }
+    return { saved };
+  } catch (err) {
+    return { error: String((err && err.message) || err) };
+  }
+});
+
 ipcMain.handle("omsi:readAsset", async (_e, omsiRoot, relPath) => {
   try {
     if (!omsiRoot) return null;
     const target = path.resolve(path.join(omsiRoot, String(relPath).replace(/[\\/]+/g, path.sep)));
-    if (!target.startsWith(path.resolve(omsiRoot))) return null; // mimo kořen
+    const rel = path.relative(path.resolve(omsiRoot), target);
+    if (!rel || rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) return null; // mimo kořen
     const buf = await fs.readFile(target);
     return new Uint8Array(buf);
   } catch {

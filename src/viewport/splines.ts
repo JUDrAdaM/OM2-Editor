@@ -126,15 +126,15 @@ export function splineSteps(s: MapSpline): number {
 /** Body osy splajnu ve světových souřadnicích (pro výběrovou čáru i fallback). */
 export function splineCenterline(
   s: MapSpline, tileX: number, tileY: number,
-  _heightAt: (lx: number, ly: number) => number, lift = 0.15
+  _heightAt: (lx: number, ly: number) => number, lift = 0.15, tileSize = TILE_SIZE
 ): THREE.Vector3[] {
   // POZOR: s.z je ABSOLUTNÍ výška splajnu (≈ výška terénu, který je k silnici
   // zarovnán), ne offset nad terén. Výška terénu se NEPŘIČÍTÁ (jinak levituje).
   const frames = splineFrames(s, splineSteps(s));
   return frames.map((f) => new THREE.Vector3(
-    tileX * TILE_SIZE + f.lx,
+    tileX * tileSize + f.lx,
     s.z + f.hGrad + lift,
-    -(tileY * TILE_SIZE + f.ly)
+    -(tileY * tileSize + f.ly)
   ));
 }
 
@@ -213,7 +213,7 @@ function bucketKey(tex: THREE.Texture | null, onlyEditor: boolean): string {
  */
 export function appendSplineGeometry(
   buckets: Map<string, SplineMergeBucket>,
-  loaded: LoadedSpline, s: MapSpline, tileX: number, tileY: number
+  loaded: LoadedSpline, s: MapSpline, tileX: number, tileY: number, tileSize = TILE_SIZE
 ): void {
   const steps = splineSteps(s);
   const frames = splineFrames(s, steps);
@@ -233,10 +233,10 @@ export function appendSplineGeometry(
         const f0 = frames[i], f1 = frames[i + 1];
         const base = b.pos.length / 3;
         // 4 vrcholy kvádru: (station i × bod a,c), (station i+1 × bod a,c)
-        pushVert(b, tileX, tileY, f0, a, baseZ);
-        pushVert(b, tileX, tileY, f0, c, baseZ);
-        pushVert(b, tileX, tileY, f1, a, baseZ);
-        pushVert(b, tileX, tileY, f1, c, baseZ);
+        pushVert(b, tileX, tileY, f0, a, baseZ, tileSize);
+        pushVert(b, tileX, tileY, f0, c, baseZ, tileSize);
+        pushVert(b, tileX, tileY, f1, a, baseZ, tileSize);
+        pushVert(b, tileX, tileY, f1, c, baseZ, tileSize);
         // dva trojúhelníky (DoubleSide → na winding nezáleží)
         b.idx.push(base, base + 2, base + 3, base, base + 3, base + 1);
       }
@@ -269,13 +269,13 @@ export function buildMergedSplineMeshes(buckets: Map<string, SplineMergeBucket>)
 function pushVert(
   b: { pos: number[]; uv: number[]; idx: number[] },
   tileX: number, tileY: number, f: SplineFrame, p: { x: number; z: number; u: number; vSlope: number },
-  baseZ: number
+  baseZ: number, tileSize: number
 ) {
   const lx = f.lx + f.rx * p.x;
   const ly = f.ly + f.ry * p.x;
   // s.z (baseZ) je ABSOLUTNÍ výška silnice; terén se NEPŘIČÍTÁ (zarovnaný k silnici).
   const h = baseZ + f.hGrad + p.z;
-  b.pos.push(tileX * TILE_SIZE + lx, h, -(tileY * TILE_SIZE + ly));
+  b.pos.push(tileX * tileSize + lx, h, -(tileY * tileSize + ly));
   b.uv.push(p.u, f.d * p.vSlope);
 }
 
@@ -327,12 +327,12 @@ function appendChevrons(arr: number[], s: MapSpline, path: SliPath, ox: number, 
  */
 export function appendPathLines(
   perType: Map<number, number[]>,
-  loaded: LoadedSpline, s: MapSpline, tileX: number, tileY: number
+  loaded: LoadedSpline, s: MapSpline, tileX: number, tileY: number, tileSize = TILE_SIZE
 ): void {
   if (!loaded.def.paths.length) return;
   const steps = splineSteps(s);
   const frames = splineFrames(s, steps);
-  const ox = tileX * TILE_SIZE, oz = tileY * TILE_SIZE;
+  const ox = tileX * tileSize, oz = tileY * tileSize;
   for (const path of loaded.def.paths) {
     let arr = perType.get(path.type);
     if (!arr) { arr = []; perType.set(path.type, arr); }

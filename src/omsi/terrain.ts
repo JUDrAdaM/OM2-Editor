@@ -29,8 +29,8 @@ function at(t: TerrainData, col: number, row: number): number {
 /**
  * Bilineárně interpolovaná výška terénu v lokálních souřadnicích dlaždice (0..TILE_SIZE).
  */
-export function terrainHeightAt(t: TerrainData, x: number, y: number): number {
-  const step = TILE_SIZE / (t.size - 1);
+export function terrainHeightAt(t: TerrainData, x: number, y: number, tileSize = TILE_SIZE): number {
+  const step = tileSize / (t.size - 1);
   let gx = x / step;
   let gy = y / step;
   const maxG = t.size - 1;

@@ -7,6 +7,7 @@ import {
   setObjectField, setSplineField, deleteObject, deleteSpline,
   duplicateObject, createObject, findTemplateObject, maxId, deriveTile,
   createSpline, findTemplateSpline, setSplineNext, setTreeOverride,
+  getGroundTexEntries, setGroundTexEntries,
 } from "../omsi/map";
 import { terrainHeightAt } from "../omsi/terrain";
 import { ModelCache, decodeTexture, tryReadNamed, textureCandidates, dirOf, clearTextureCache } from "./models";
@@ -19,7 +20,7 @@ import { runPool } from "../util/async";
 const ASSET_CONCURRENCY = 24;
 
 function tileHeight(t: MapTile, x: number, y: number): number {
-  return t.terrain ? terrainHeightAt(t.terrain, x, y) : 0;
+  return t.terrain ? terrainHeightAt(t.terrain, x, y, t.tileSize ?? TILE_SIZE) : 0;
 }
 
 export interface ObjectSelection { kind: "object"; tileIndex: number; objectIndex: number; object: MapObject; }
@@ -36,8 +37,8 @@ const SPLINE_SEL_COLOR = 0x4ea1ff;
 const SPLINE_LOD_COLOR = 0x6b7079;
 const OBJ_H = 6;
 
-function worldPos(tileX: number, tileY: number, x: number, y: number, z: number): THREE.Vector3 {
-  return new THREE.Vector3(tileX * TILE_SIZE + x, z, -(tileY * TILE_SIZE + y));
+function worldPos(tileX: number, tileY: number, x: number, y: number, z: number, tileSize = TILE_SIZE): THREE.Vector3 {
+  return new THREE.Vector3(tileX * tileSize + x, z, -(tileY * tileSize + y));
 }
 
 interface Pickable { mesh: THREE.InstancedMesh; map: { tileIndex: number; objectIndex: number }[]; tileIndex: number; }
@@ -81,6 +82,7 @@ export class Viewport {
   private highlight: THREE.LineSegments;
 
   private currentMap: OmsiMap | null = null;
+  private get tileSize(): number { return this.currentMap?.tileSize ?? TILE_SIZE; }
   private selection: Selection | null = null;
   private selSplineLine: THREE.Line | null = null;
 
@@ -126,14 +128,18 @@ export class Viewport {
   private terrainTouched = new Set<number>(); // dlaždice změněné tahem (pro rebuild)
   /** Terénní mesh podle indexu dlaždice (pro živou deformaci). */
   private terrainMeshes = new Map<number, THREE.Mesh>();
-  /** Malování povrchu: načtená detailní textura (dlažba atd.). */
-  private paintTexture: THREE.Texture | null = null;
-  /** Perzistentní malovaná maska dlaždice (canvas); přežívá přestavby scény. */
-  private paintMasks = new Map<number, HTMLCanvasElement>();
+  /** Textury malovaných vrstev, klíčované indexem [groundtex]. */
+  private paintTextures = new Map<number, THREE.Texture>();
+  /** Masky OMSI terrain layers, klíč `tileIndex:groundtexIndex`. */
+  private paintMasks = new Map<string, HTMLCanvasElement>();
+  private paintDirtyMasks = new Set<string>();
+  private paintLayerIndex: number | null = null;
+  private paintMaskResolution = 512;
+  private paintLoadToken = 0;
   /** Overlay vrstvy v aktuální scéně (vytváří se při build() z masek). */
-  private paintLayers = new Map<number, { tex: THREE.CanvasTexture; mesh: THREE.Mesh }>();
+  private paintLayers = new Map<string, { tex: THREE.CanvasTexture; mesh: THREE.Mesh }>();
   private paintStroke = false;
-  private static readonly PAINT_RES = 256;
+  private static readonly PAINT_RES = 512;
 
   private modelCache: ModelCache | null = null;
   private loadedModels = new Map<string, LoadedModel | null>();
@@ -218,7 +224,7 @@ export class Viewport {
     this.scene.add(sun);
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.25));
 
-    const grid = new THREE.GridHelper(TILE_SIZE * 20, 20 * 10, 0x2a3442, 0x1a2029);
+    const grid = new THREE.GridHelper(this.tileSize * 20, 20 * 10, 0x2a3442, 0x1a2029);
     (grid.material as THREE.Material).transparent = true;
     (grid.material as THREE.Material).opacity = 0.3;
     this.scene.add(grid);
@@ -316,7 +322,7 @@ export class Viewport {
     const p = this.gizmoProxy;
     if (sel.kind === "object") {
       const o = sel.object;
-      p.position.copy(worldPos(t.tileX, t.tileY, o.x, o.y, this.objBaseY(t, o)));
+      p.position.copy(worldPos(t.tileX, t.tileY, o.x, o.y, this.objBaseY(t, o), this.tileSize));
       // Pořadí YXZ odpovídá OMSI heading·pitch·bank (viz setObjMatrix).
       p.rotation.set(
         THREE.MathUtils.degToRad(o.rotX),
@@ -326,7 +332,7 @@ export class Viewport {
       );
     } else {
       const s = sel.spline;
-      p.position.copy(worldPos(t.tileX, t.tileY, s.x, s.y, s.z));
+      p.position.copy(worldPos(t.tileX, t.tileY, s.x, s.y, s.z, this.tileSize));
       p.rotation.set(0, THREE.MathUtils.degToRad(s.rotZ), 0, "YXZ");
     }
     p.scale.set(1, 1, 1);
@@ -371,8 +377,8 @@ export class Viewport {
         }
         return;
       }
-      const lx = round3(p.position.x - t.tileX * TILE_SIZE);
-      const ly = round3(-p.position.z - t.tileY * TILE_SIZE);
+      const lx = round3(p.position.x - t.tileX * this.tileSize);
+      const ly = round3(-p.position.z - t.tileY * this.tileSize);
       setObjectField(t, o, "x", lx);
       setObjectField(t, o, "y", ly);
       const terrainBase = this.isAbsolute(o.path) ? 0 : tileHeight(t, lx, ly);
@@ -388,8 +394,8 @@ export class Viewport {
       this.moveHighlightToObject(sel);
     } else {
       const s = sel.spline;
-      const lx = round3(p.position.x - t.tileX * TILE_SIZE);
-      const ly = round3(-p.position.z - t.tileY * TILE_SIZE);
+      const lx = round3(p.position.x - t.tileX * this.tileSize);
+      const ly = round3(-p.position.z - t.tileY * this.tileSize);
       setSplineField(t, s, "x", lx);
       setSplineField(t, s, "y", ly);
       setSplineField(t, s, "z", round3(p.position.y));
@@ -675,7 +681,12 @@ export class Viewport {
   setMap(map: OmsiMap) {
     this.currentMap = map;
     this.clearHistory();
-    this.paintMasks.clear(); this.paintLayers.clear(); this.paintTexture = null;
+    this.paintLoadToken++;
+    this.clearPaintOverlays();
+    this.paintMasks.clear(); this.paintDirtyMasks.clear();
+    this.paintLayerIndex = null;
+    for (const tex of this.paintTextures.values()) tex.dispose();
+    this.paintTextures.clear();
     this.clearSelection(false);
     this.loadedModels.clear();
     this.loadedSplines.clear();
@@ -697,7 +708,7 @@ export class Viewport {
     this.build();
     const t = this.currentMap.tiles[tileIndex];
     if (!t) return;
-    const cx = (t.tileX + 0.5) * TILE_SIZE, cz = -(t.tileY + 0.5) * TILE_SIZE;
+    const cx = (t.tileX + 0.5) * this.tileSize, cz = -(t.tileY + 0.5) * this.tileSize;
     const base = t.terrain ? (t.terrain.heights[0] as number) : 0;
     this.controls.target.set(cx, base, cz);
     this.camera.position.set(cx + 120, base + 260, cz + 220);
@@ -892,14 +903,14 @@ export class Viewport {
       const group = new THREE.Group();
 
       // Terén + okraj dlaždice
-      const center = worldPos(t.tileX, t.tileY, TILE_SIZE / 2, TILE_SIZE / 2, -0.05);
+      const center = worldPos(t.tileX, t.tileY, this.tileSize / 2, this.tileSize / 2, -0.05, this.tileSize);
       if (t.terrain) {
         const tm = this.buildTerrain(t);
         this.groundMeshes.push(tm);
         this.terrainMeshes.set(ti, tm);
         group.add(tm);
       } else {
-        const planeGeo = new THREE.PlaneGeometry(TILE_SIZE, TILE_SIZE);
+        const planeGeo = new THREE.PlaneGeometry(this.tileSize, this.tileSize);
         if (this.groundTexture) {
           // natáhni UV na opakování textury přes dlaždici
           const uv = planeGeo.attributes.uv as THREE.BufferAttribute;
@@ -913,7 +924,7 @@ export class Viewport {
         this.groundMeshes.push(plane);
         group.add(plane);
       }
-      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.PlaneGeometry(TILE_SIZE, TILE_SIZE)), edgeMat);
+      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.PlaneGeometry(this.tileSize, this.tileSize)), edgeMat);
       edges.rotation.x = -Math.PI / 2; edges.position.copy(center);
       group.add(edges);
 
@@ -1001,7 +1012,7 @@ export class Viewport {
       boxEntries.forEach((e, k) => {
         const t = map.tiles[e.ti];
         const h = tileHeight(t, e.o.x, e.o.y);
-        dummy.position.copy(worldPos(t.tileX, t.tileY, e.o.x, e.o.y, h + e.o.z + OBJ_H));
+        dummy.position.copy(worldPos(t.tileX, t.tileY, e.o.x, e.o.y, h + e.o.z + OBJ_H, this.tileSize));
         dummy.rotation.set(0, THREE.MathUtils.degToRad(e.o.rotZ), 0);
         dummy.scale.set(1, 1, 1);
         dummy.updateMatrix();
@@ -1066,8 +1077,8 @@ export class Viewport {
       for (const o of t.objects) {
         if (!this.isSignalObject(o)) continue;
         lights++;
-        const wx = t.tileX * TILE_SIZE + o.x;
-        const wz = -(t.tileY * TILE_SIZE + o.y);
+        const wx = t.tileX * this.tileSize + o.x;
+        const wz = -(t.tileY * this.tileSize + o.y);
         const base = o.z, top = o.z + H;
         stick.push(wx, base, wz, wx, top, wz);          // svislý stožár
         stick.push(wx - CR, top, wz, wx + CR, top, wz);  // příčka X
@@ -1155,9 +1166,9 @@ export class Viewport {
 
   /** Konzervativní obalová koule dlaždice (footprint + velkorysý vertikální rozsah). */
   private tileSphere(t: MapTile): THREE.Sphere {
-    const cx = (t.tileX + 0.5) * TILE_SIZE;
-    const cz = -(t.tileY + 0.5) * TILE_SIZE;
-    const horiz = TILE_SIZE / 2 + 60;        // přesah objektů za okraj dlaždice
+    const cx = (t.tileX + 0.5) * this.tileSize;
+    const cz = -(t.tileY + 0.5) * this.tileSize;
+    const horiz = this.tileSize / 2 + 60;        // přesah objektů za okraj dlaždice
     const CENTER_Y = 120, VERT_HALF = 340;   // pokryje i vysoké budovy/věže
     const r = Math.hypot(horiz, horiz, VERT_HALF);
     return new THREE.Sphere(new THREE.Vector3(cx, CENTER_Y, cz), r);
@@ -1211,8 +1222,8 @@ export class Viewport {
       const s = t.splines[si];
       const loaded = this.loadedSplines.get(s.path);
       if (loaded) {
-        appendSplineGeometry(buckets, loaded, s, t.tileX, t.tileY);
-        appendPathLines(pathByType, loaded, s, t.tileX, t.tileY);
+        appendSplineGeometry(buckets, loaded, s, t.tileX, t.tileY, this.tileSize);
+        appendPathLines(pathByType, loaded, s, t.tileX, t.tileY, this.tileSize);
       } else {
         // Fallback: osa jako úsečky (dvojice bodů) do sloučené LineSegments.
         const pts = this.splinePoints(t, s);
@@ -1344,12 +1355,12 @@ export class Viewport {
         m.multiply(this._rTmp.makeScale(sxz, sy, sxz));
       }
     }
-    m.setPosition(worldPos(t.tileX, t.tileY, o.x, o.y, baseY));
+    m.setPosition(worldPos(t.tileX, t.tileY, o.x, o.y, baseY, this.tileSize));
   }
 
-  /** Objekt leží mimo svoji dlaždici (lokální x/y mimo [0,300])? OMSI ho nekreslí. */
+  /** Objekt leží mimo svoji dlaždici? Některé OMSI mapy ukládají i přesah do sousední. */
   private outOfTile(o: MapObject): boolean {
-    const e = TILE_SIZE + 1e-3;
+    const e = this.tileSize + 1e-3;
     return o.x < -1e-3 || o.x > e || o.y < -1e-3 || o.y > e;
   }
 
@@ -1393,9 +1404,9 @@ export class Viewport {
       if (!sp || local < 0) continue;
       const smp = splineSampleAt(sp, local);
       dummy.position.set(
-        t.tileX * TILE_SIZE + smp.lx + a.lateral * smp.rx,
+        t.tileX * this.tileSize + smp.lx + a.lateral * smp.rx,
         smp.worldY + a.height,
-        -(t.tileY * TILE_SIZE + smp.ly + a.lateral * smp.ry)
+        -(t.tileY * this.tileSize + smp.ly + a.lateral * smp.ry)
       );
       dummy.rotation.set(0, THREE.MathUtils.degToRad(smp.headingDeg + a.heading), 0);
       dummy.scale.set(1, 1, 1);
@@ -1432,14 +1443,14 @@ export class Viewport {
   private buildTerrain(t: MapTile): THREE.Mesh {
     const terr = t.terrain!;
     const n = terr.size;
-    const step = TILE_SIZE / (n - 1);
+    const step = this.tileSize / (n - 1);
     const rep = Viewport.GROUND_REPEAT;
     const positions = new Float32Array(n * n * 3);
     const uvs = new Float32Array(n * n * 2);
     const uv1 = new Float32Array(n * n * 2); // 0..1 přes dlaždici - pro lightmapu
     for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
       const idx = j * n + i;
-      const w = worldPos(t.tileX, t.tileY, i * step, j * step, terr.heights[idx]);
+      const w = worldPos(t.tileX, t.tileY, i * step, j * step, terr.heights[idx], this.tileSize);
       positions[idx * 3] = w.x; positions[idx * 3 + 1] = w.y; positions[idx * 3 + 2] = w.z;
       uvs[idx * 2] = (i / (n - 1)) * rep; uvs[idx * 2 + 1] = (j / (n - 1)) * rep;
       uv1[idx * 2] = i / (n - 1); uv1[idx * 2 + 1] = j / (n - 1);
@@ -1463,7 +1474,7 @@ export class Viewport {
   }
 
   private splinePoints(t: MapTile, s: MapSpline, lift = 0.3): THREE.Vector3[] {
-    return splineCenterline(s, t.tileX, t.tileY, (lx, ly) => tileHeight(t, lx, ly), lift);
+    return splineCenterline(s, t.tileX, t.tileY, (lx, ly) => tileHeight(t, lx, ly), lift, this.tileSize);
   }
 
   private frameMap(map: OmsiMap) {
@@ -1473,8 +1484,8 @@ export class Viewport {
       minX = Math.min(minX, t.tileX); maxX = Math.max(maxX, t.tileX);
       minY = Math.min(minY, t.tileY); maxY = Math.max(maxY, t.tileY);
     }
-    const cx = ((minX + maxX + 1) / 2) * TILE_SIZE, cz = -((minY + maxY + 1) / 2) * TILE_SIZE;
-    const span = (Math.max(maxX - minX, maxY - minY) + 1) * TILE_SIZE;
+    const cx = ((minX + maxX + 1) / 2) * this.tileSize, cz = -((minY + maxY + 1) / 2) * this.tileSize;
+    const span = (Math.max(maxX - minX, maxY - minY) + 1) * this.tileSize;
     this.controls.target.set(cx, 0, cz);
     this.camera.position.set(cx + span * 0.5, span * 0.5 + 150, cz + span * 0.6);
   }
@@ -1600,7 +1611,7 @@ export class Viewport {
     if (!this.raycaster.ray.intersectPlane(this.dragPlane, hit)) return;
     this.dragMoved = true;
     const t = this.currentMap.tiles[this.selection.tileIndex];
-    const lx = round3(hit.x - t.tileX * TILE_SIZE), ly = round3(-hit.z - t.tileY * TILE_SIZE);
+    const lx = round3(hit.x - t.tileX * this.tileSize), ly = round3(-hit.z - t.tileY * this.tileSize);
     if (this.selection.kind === "object") {
       setObjectField(t, this.selection.object, "x", lx);
       setObjectField(t, this.selection.object, "y", ly);
@@ -1617,7 +1628,12 @@ export class Viewport {
 
   private onPointerUp = () => {
     if (this.terrainStroke) { this.endTerrainStroke(); return; }
-    if (this.paintStroke) { this.paintStroke = false; this.controls.enabled = true; this.onStatus?.("Povrch namalován."); return; }
+    if (this.paintStroke) {
+      this.paintStroke = false; this.controls.enabled = true;
+      this.onChange?.(null);
+      this.onStatus?.("Povrch namalován. Ulož změny klávesami Ctrl+S.");
+      return;
+    }
     if (!this.dragging) return;
     const moved = this.dragMoved;
     const sel = this.selection;
@@ -1645,11 +1661,11 @@ export class Viewport {
 
   private placeObjectAt(point: THREE.Vector3) {
     if (!this.currentMap || !this.placePath) return;
-    const tileX = Math.floor(point.x / TILE_SIZE), tileY = Math.floor(-point.z / TILE_SIZE);
+    const tileX = Math.floor(point.x / this.tileSize), tileY = Math.floor(-point.z / this.tileSize);
     const tileIndex = this.currentMap.tiles.findIndex((t) => t.tileX === tileX && t.tileY === tileY);
     if (tileIndex < 0) { this.onStatus?.("Na tomto místě není dlaždice mapy.", true); return; }
     const t = this.currentMap.tiles[tileIndex];
-    const lx = round3(point.x - tileX * TILE_SIZE), ly = round3(-point.z - tileY * TILE_SIZE);
+    const lx = round3(point.x - tileX * this.tileSize), ly = round3(-point.z - tileY * this.tileSize);
     const tmpl = findTemplateObject(this.currentMap, this.placePath);
     const templateSection = tmpl ? tmpl.tile.sections[tmpl.obj.sectionIndex] : undefined;
     this.beginEdit(tileIndex);
@@ -1671,7 +1687,7 @@ export class Viewport {
   private moveHighlightToObject(sel: ObjectSelection) {
     if (!this.currentMap) return;
     const t = this.currentMap.tiles[sel.tileIndex], o = sel.object;
-    this.highlight.position.copy(worldPos(t.tileX, t.tileY, o.x, o.y, this.objBaseY(t, o) + OBJ_H));
+    this.highlight.position.copy(worldPos(t.tileX, t.tileY, o.x, o.y, this.objBaseY(t, o) + OBJ_H, this.tileSize));
     this.highlight.visible = true;
   }
   /** Vytvoří/obnoví modrou překryvnou čáru osy vybraného splajnu. */
@@ -1762,6 +1778,8 @@ export class Viewport {
   isToolActive(): boolean { return this.tool != null || this.placePath != null; }
   /** Zruší všechny nástroje (výběr zůstává). */
   clearTools() {
+    this.paintLoadToken++;
+    this.paintLayerIndex = null;
     this.tool = null; this.roadPath = null; this.roadStart = null; this.lastRoad = null; this.roadHeading = null;
     this.placePath = null;
     if (this.terrainStroke) this.endTerrainStroke();
@@ -1823,11 +1841,11 @@ export class Viewport {
     heading = ((heading % 360) + 360) % 360;
     endHeading = ((endHeading % 360) + 360) % 360;
 
-    const tileX = Math.floor(x0 / TILE_SIZE), tileY = Math.floor(y0 / TILE_SIZE);
+    const tileX = Math.floor(x0 / this.tileSize), tileY = Math.floor(y0 / this.tileSize);
     const tileIndex = this.currentMap.tiles.findIndex((t) => t.tileX === tileX && t.tileY === tileY);
     if (tileIndex < 0) { this.onStatus?.("Začátek není na dlaždici mapy.", true); return; }
     const t = this.currentMap.tiles[tileIndex];
-    const lx = round3(x0 - tileX * TILE_SIZE), ly = round3(y0 - tileY * TILE_SIZE);
+    const lx = round3(x0 - tileX * this.tileSize), ly = round3(y0 - tileY * this.tileSize);
     const z = round3(tileHeight(t, lx, ly));
     const newId = maxId(this.currentMap) + 1;
     const prevId = this.lastRoad?.spline.id ?? 0;
@@ -1906,10 +1924,10 @@ export class Viewport {
     for (let ti = 0; ti < this.currentMap.tiles.length; ti++) {
       const t: MapTile = this.currentMap.tiles[ti];
       if (!t.terrain) continue;
-      const ox = t.tileX * TILE_SIZE, oy = t.tileY * TILE_SIZE;
-      if (wx + r < ox || wx - r > ox + TILE_SIZE || wy + r < oy || wy - r > oy + TILE_SIZE) continue;
+      const ox = t.tileX * this.tileSize, oy = t.tileY * this.tileSize;
+      if (wx + r < ox || wx - r > ox + this.tileSize || wy + r < oy || wy - r > oy + this.tileSize) continue;
       const n: number = t.terrain.size;
-      const step = TILE_SIZE / (n - 1);
+      const step = this.tileSize / (n - 1);
       const heights = t.terrain.heights as Float32Array | number[];
       // U vyhlazení čti ze snímku (jinak by směr průchodu zkresloval průměr).
       const snap = op === "smooth" ? Float32Array.from(heights as number[]) : null;
@@ -1948,11 +1966,11 @@ export class Viewport {
     const t = this.currentMap.tiles[ti];
     const mesh = this.terrainMeshes.get(ti);
     if (!t.terrain || !mesh) return;
-    const n = t.terrain.size, step = TILE_SIZE / (n - 1);
+    const n = t.terrain.size, step = this.tileSize / (n - 1);
     const pos = mesh.geometry.attributes.position as THREE.BufferAttribute;
     for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
       const idx = j * n + i;
-      const w = worldPos(t.tileX, t.tileY, i * step, j * step, t.terrain.heights[idx] as number);
+      const w = worldPos(t.tileX, t.tileY, i * step, j * step, t.terrain.heights[idx] as number, this.tileSize);
       pos.setXYZ(idx, w.x, w.y, w.z);
     }
     pos.needsUpdate = true;
@@ -1976,33 +1994,156 @@ export class Viewport {
 
   /** Zapne malování povrchu zvolenou detailní texturou (groundtex nebo cesta). */
   async setPaintMode(texPath: string | null) {
+    const token = ++this.paintLoadToken;
+    this.paintLayerIndex = null;
     this.placePath = null; this.roadPath = null; this.tool = texPath ? "paint" : null;
     if (texPath) this.detachGizmo(); else this.attachGizmo();
     this.renderer.domElement.style.cursor = texPath ? "crosshair" : "";
     this.emitTool();
-    if (!texPath) { this.onStatus?.("Malování povrchu ukončeno."); return; }
-    // načti texturu (relativní ke kořeni OMSI - groundtex)
-    this.paintTexture = null;
-    if (this.assetSrc) {
+    if (!texPath) {
+      this.paintLayerIndex = null;
+      this.onStatus?.("Malování povrchu ukončeno.");
+      return;
+    }
+    if (!this.currentMap) return;
+    const entries = getGroundTexEntries(this.currentMap);
+    let layerIndex = entries.findIndex((g) => g.main.toLowerCase() === texPath.toLowerCase());
+    // OMSI index 0 je výchozí textura a nemá alpha masku. Pokud uživatel zvolí
+    // právě ji, přidáme ji jako samostatnou malovatelnou vrstvu.
+    if (layerIndex === 0 && !entries.slice(1).some((g) => g.main.toLowerCase() === texPath.toLowerCase())) {
+      entries.push({ ...entries[0], nums: ["9", "1", "60"] });
+      layerIndex = entries.length - 1;
+      setGroundTexEntries(this.currentMap, entries);
+      this.onChange?.(null);
+    } else if (layerIndex === 0) {
+      layerIndex = entries.findIndex((g, i) => i > 0 && g.main.toLowerCase() === texPath.toLowerCase());
+    } else if (layerIndex < 0) {
+      entries.push({ main: texPath, detail: "", nums: ["9", "1", "60"] });
+      layerIndex = entries.length - 1;
+      setGroundTexEntries(this.currentMap, entries);
+      this.onChange?.(null);
+    }
+    const exponent = Number(entries[layerIndex]?.nums[0]);
+    this.paintMaskResolution = Number.isFinite(exponent) && exponent > 0
+      ? 2 ** Math.min(12, Math.max(5, Math.round(exponent)))
+      : Viewport.PAINT_RES;
+
+    // Načti texturu vrstvy (relativní ke kořeni OMSI) a její per-dlaždicové DDS masky.
+    if (!this.paintTextures.has(layerIndex) && this.assetSrc) {
       try {
         const buf = await this.assetSrc.readFile(texPath);
         if (buf) {
           const tex = decodeTexture(texPath, buf);
-          if (tex) { tex.colorSpace = THREE.SRGBColorSpace; tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.anisotropy = 4; this.paintTexture = tex; }
+          if (tex) {
+            tex.colorSpace = THREE.SRGBColorSpace;
+            tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+            tex.anisotropy = 4;
+            this.paintTextures.set(layerIndex, tex);
+          }
         }
-      } catch { /* ignore */ }
+      } catch { /* no texture - masks can still be edited and saved */ }
     }
-    this.onStatus?.(`Malování povrchu (${texPath.split("\\").pop()}, štětec ${this.brushRadius} m): táhni po terénu. Esc ukončí.`);
+    await this.loadPaintMasks(layerIndex, token);
+    if (token !== this.paintLoadToken) return;
+    this.paintLayerIndex = layerIndex;
+    this.rebuildPaintOverlays();
+    this.onChange?.(null);
+    this.onStatus?.(`Malování povrchu (${texPath.split("\\").pop()}, štětec ${this.brushRadius} m): táhni po terénu. Ulož Ctrl+S.`);
+  }
+
+  private paintMaskKey(tileIndex: number, layerIndex: number): string {
+    return `${tileIndex}:${layerIndex}`;
+  }
+
+  private paintMaskPath(tile: MapTile, layerIndex: number): string {
+    return `texture\\map\\${tile.fileName}.${layerIndex}.dds`;
+  }
+
+  private async loadPaintMasks(layerIndex: number, token: number): Promise<void> {
+    if (!this.assetSrc || !this.currentMap) return;
+    const tiles = this.currentMap.tiles.map((tile, ti) => ({ tile, ti }));
+    await runPool(tiles, ASSET_CONCURRENCY, async ({ tile, ti }) => {
+      const key = this.paintMaskKey(ti, layerIndex);
+      if (this.paintMasks.has(key)) return;
+      const folder = (this.currentMap!.rootName || "").replace(/[\\/]/g, "");
+      const readPath = `maps\\${folder}\\${this.paintMaskPath(tile, layerIndex)}`;
+      const buf = await this.assetSrc!.readFile(readPath);
+      if (!buf || token !== this.paintLoadToken) return;
+      const parsed = this.parseAlphaMask(buf);
+      if (!parsed) return;
+      const canvas = document.createElement("canvas");
+      canvas.width = parsed.width;
+      canvas.height = parsed.height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      const image = ctx.createImageData(parsed.width, parsed.height);
+      for (let i = 0; i < parsed.alpha.length; i++) {
+        const p = i * 4;
+        image.data[p] = image.data[p + 1] = image.data[p + 2] = 255;
+        image.data[p + 3] = parsed.alpha[i];
+      }
+      ctx.putImageData(image, 0, 0);
+      this.paintMasks.set(key, canvas);
+    }, undefined, () => token !== this.paintLoadToken);
+  }
+
+  private parseAlphaMask(buf: ArrayBuffer): { width: number; height: number; alpha: Uint8Array } | null {
+    if (buf.byteLength < 128) return null;
+    const bytes = new Uint8Array(buf);
+    if (bytes[0] !== 0x44 || bytes[1] !== 0x44 || bytes[2] !== 0x53 || bytes[3] !== 0x20) return null;
+    const dv = new DataView(buf);
+    const height = dv.getUint32(12, true), width = dv.getUint32(16, true);
+    if (!width || !height || width > 4096 || height > 4096 ||
+        dv.getUint32(80, true) !== 0x2 || dv.getUint32(88, true) !== 8 ||
+        dv.getUint32(104, true) !== 0xff || buf.byteLength < 128 + width * height) return null;
+    return { width, height, alpha: bytes.subarray(128, 128 + width * height) };
+  }
+
+  /** Vrátí pozměněné OMSI masky připravené pro zápis jako alpha DDS. */
+  getDirtyPaintMasks(): { fileName: string; width: number; height: number; alpha: Uint8Array }[] {
+    const out: { fileName: string; width: number; height: number; alpha: Uint8Array }[] = [];
+    if (!this.currentMap) return out;
+    for (const key of this.paintDirtyMasks) {
+      const [tiText, layerText] = key.split(":");
+      const ti = Number(tiText), layerIndex = Number(layerText);
+      const tile = this.currentMap.tiles[ti], canvas = this.paintMasks.get(key);
+      const ctx = canvas?.getContext("2d");
+      if (!tile || !canvas || !ctx) continue;
+      const rgba = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      const alpha = new Uint8Array(canvas.width * canvas.height);
+      for (let i = 0; i < alpha.length; i++) alpha[i] = rgba[i * 4 + 3];
+      out.push({
+        fileName: this.paintMaskPath(tile, layerIndex),
+        width: canvas.width, height: canvas.height, alpha,
+      });
+    }
+    return out;
+  }
+
+  hasUnsavedPaint(): boolean { return this.paintDirtyMasks.size > 0; }
+  getUnsavedPaintCount(): number { return this.paintDirtyMasks.size; }
+  markPaintSaved(): void { this.paintDirtyMasks.clear(); }
+
+  private clearPaintOverlays() {
+    for (const { tex, mesh } of this.paintLayers.values()) {
+      mesh.removeFromParent();
+      mesh.geometry.dispose();
+      const material = mesh.material as THREE.MeshStandardMaterial;
+      material.alphaMap = null;
+      material.dispose();
+      tex.dispose();
+    }
+    this.paintLayers.clear();
   }
 
   /** Geometrie terénu dlaždice s volitelným zvednutím (pro malovaný overlay). */
   private terrainGeometry(t: MapTile, lift: number): THREE.BufferGeometry {
     const terr = t.terrain!;
-    const n = terr.size, step = TILE_SIZE / (n - 1), rep = Viewport.GROUND_REPEAT;
+    const n = terr.size, step = this.tileSize / (n - 1), rep = Viewport.GROUND_REPEAT;
     const pos = new Float32Array(n * n * 3), uvs = new Float32Array(n * n * 2), uv1 = new Float32Array(n * n * 2);
     for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
       const idx = j * n + i;
-      const w = worldPos(t.tileX, t.tileY, i * step, j * step, (terr.heights[idx] as number) + lift);
+      const w = worldPos(t.tileX, t.tileY, i * step, j * step, (terr.heights[idx] as number) + lift, this.tileSize);
       pos[idx * 3] = w.x; pos[idx * 3 + 1] = w.y; pos[idx * 3 + 2] = w.z;
       uvs[idx * 2] = (i / (n - 1)) * rep; uvs[idx * 2 + 1] = (j / (n - 1)) * rep;
       uv1[idx * 2] = i / (n - 1); uv1[idx * 2 + 1] = j / (n - 1);
@@ -2021,67 +2162,81 @@ export class Viewport {
     return geo;
   }
 
-  /** Perzistentní maska dlaždice (canvas); vytvoří on-demand. */
-  private getPaintMask(ti: number): HTMLCanvasElement | null {
-    if (!this.currentMap?.tiles[ti]?.terrain) return null;
-    let canvas = this.paintMasks.get(ti);
-    if (!canvas) {
-      canvas = document.createElement("canvas");
-      canvas.width = canvas.height = Viewport.PAINT_RES;
-      this.paintMasks.set(ti, canvas);
-    }
-    return canvas;
-  }
-  /** Zajistí overlay mesh v aktuální scéně pro dlaždici (z její masky). */
-  private ensurePaintOverlay(ti: number): { tex: THREE.CanvasTexture; mesh: THREE.Mesh } | null {
-    let layer = this.paintLayers.get(ti);
+  /** Zajistí overlay mesh pro existující masku konkrétní dlaždice a vrstvy. */
+  private ensurePaintOverlay(ti: number, layerIndex: number): { tex: THREE.CanvasTexture; mesh: THREE.Mesh } | null {
+    const key = this.paintMaskKey(ti, layerIndex);
+    let layer = this.paintLayers.get(key);
     if (layer) return layer;
     const t = this.currentMap?.tiles[ti];
-    const canvas = this.paintMasks.get(ti);
-    if (!t || !t.terrain || !canvas || !this.paintTexture) return null;
+    const canvas = this.paintMasks.get(key);
+    const paintTexture = this.paintTextures.get(layerIndex);
+    if (!t || !t.terrain || !canvas || !paintTexture) return null;
     const tex = new THREE.CanvasTexture(canvas);
-    tex.flipY = false;
-    tex.channel = 1; // alphaMap používá uv1 (0..1 přes dlaždici)
+    tex.flipY = true; // OMSI DDS mask row 0 is the north edge.
+    tex.channel = 1; // alphaMap uses uv1 (0..1 over the tile)
     const mat = new THREE.MeshStandardMaterial({
-      map: this.paintTexture, alphaMap: tex, transparent: true, depthWrite: false,
+      map: paintTexture, alphaMap: tex, transparent: true, depthWrite: false,
       roughness: 1, side: THREE.DoubleSide,
     });
     const mesh = new THREE.Mesh(this.terrainGeometry(t, 0.12), mat);
-    mesh.renderOrder = 2; // nad terénem i silnicemi
+    mesh.renderOrder = 2;
     const group = this.tileGroups[ti]?.group;
     if (group) group.add(mesh);
     layer = { tex, mesh };
-    this.paintLayers.set(ti, layer);
+    this.paintLayers.set(key, layer);
     return layer;
   }
-  /** Po přestavbě scény znovu vytvoří overlay vrstvy ze všech masek. */
+
+  /** Znovu vytvoří overlay vrstvy ze všech načtených OMSI masek. */
   private rebuildPaintOverlays() {
-    this.paintLayers.clear();
-    if (!this.paintTexture) return;
-    for (const ti of this.paintMasks.keys()) this.ensurePaintOverlay(ti);
+    this.clearPaintOverlays();
+    for (const key of this.paintMasks.keys()) {
+      const [ti, layerIndex] = key.split(":").map(Number);
+      this.ensurePaintOverlay(ti, layerIndex);
+    }
   }
 
-  /** Namaluje do masky dlaždic v dosahu štětce. */
+  /** Canvas pro masku dlaždice; při prvním tahu vznikne prázdná OMSI alpha maska. */
+  private getPaintMask(ti: number): HTMLCanvasElement | null {
+    const tile = this.currentMap?.tiles[ti];
+    const layerIndex = this.paintLayerIndex;
+    if (!tile?.terrain || layerIndex == null) return null;
+    const key = this.paintMaskKey(ti, layerIndex);
+    let canvas = this.paintMasks.get(key);
+    if (!canvas) {
+      canvas = document.createElement("canvas");
+      canvas.width = canvas.height = this.paintMaskResolution;
+      this.paintMasks.set(key, canvas);
+    }
+    return canvas;
+  }
+
+  /** Namaluje do OMSI alpha masky všech dlaždic v dosahu štětce. */
   private applyPaintBrush(p: THREE.Vector3) {
-    if (!this.currentMap) return;
-    const wx = p.x, wy = -p.z, r = this.brushRadius, R = Viewport.PAINT_RES;
+    if (!this.currentMap || this.paintLayerIndex == null) return;
+    const wx = p.x, wy = -p.z, r = this.brushRadius;
     for (let ti = 0; ti < this.currentMap.tiles.length; ti++) {
       const t = this.currentMap.tiles[ti];
       if (!t.terrain) continue;
-      const ox = t.tileX * TILE_SIZE, oy = t.tileY * TILE_SIZE;
-      if (wx + r < ox || wx - r > ox + TILE_SIZE || wy + r < oy || wy - r > oy + TILE_SIZE) continue;
+      const ox = t.tileX * this.tileSize, oy = t.tileY * this.tileSize;
+      if (wx + r < ox || wx - r > ox + this.tileSize || wy + r < oy || wy - r > oy + this.tileSize) continue;
       const canvas = this.getPaintMask(ti);
       if (!canvas) continue;
       const ctx = canvas.getContext("2d");
       if (!ctx) continue;
-      const cx = ((wx - ox) / TILE_SIZE) * R, cy = ((wy - oy) / TILE_SIZE) * R, cr = (r / TILE_SIZE) * R;
+      const R = canvas.width;
+      const cx = ((wx - ox) / this.tileSize) * R;
+      const cy = (1 - (wy - oy) / this.tileSize) * canvas.height;
+      const cr = (r / this.tileSize) * R;
       const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(cr, 1));
       grad.addColorStop(0, "rgba(255,255,255,0.4)");
       grad.addColorStop(1, "rgba(255,255,255,0)");
       ctx.globalCompositeOperation = "lighter";
       ctx.fillStyle = grad;
       ctx.beginPath(); ctx.arc(cx, cy, Math.max(cr, 1), 0, Math.PI * 2); ctx.fill();
-      const layer = this.ensurePaintOverlay(ti);
+      const key = this.paintMaskKey(ti, this.paintLayerIndex);
+      this.paintDirtyMasks.add(key);
+      const layer = this.ensurePaintOverlay(ti, this.paintLayerIndex);
       if (layer) layer.tex.needsUpdate = true;
     }
   }
@@ -2090,7 +2245,7 @@ export class Viewport {
     if (!this.currentMap) return;
     const t = this.currentMap.tiles[tileIndex], o = t.objects[objectIndex];
     this.selectObject(tileIndex, objectIndex, o);
-    const p = worldPos(t.tileX, t.tileY, o.x, o.y, this.objBaseY(t, o));
+    const p = worldPos(t.tileX, t.tileY, o.x, o.y, this.objBaseY(t, o), this.tileSize);
     this.controls.target.copy(p);
     this.camera.position.set(p.x + 40, p.y + 55, p.z + 40);
   }

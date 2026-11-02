@@ -1,7 +1,7 @@
 import { Viewport } from "../viewport/viewport";
 import type { Selection, ObjField, SplField, GizmoMode, ToolId } from "../viewport/viewport";
 import {
-  openMapFolder, saveMap, createAssetSource, loadMapFromOmsiDev,
+  openMapFolder, saveMap, serializeAlphaDds, createAssetSource, loadMapFromOmsiDev,
   pickAssetFiles, listAssetFolder, getKnownAssets, addKnownAsset, omsiRootOf, isElectronApp,
 } from "../fs/loader";
 import type { AssetKind } from "../fs/loader";
@@ -9,7 +9,10 @@ import { openSettings } from "./settings";
 import { openHelp } from "./help";
 import { openMapProps } from "./mapprops";
 import { actionFromEvent } from "./keybindings";
-import { usedObjectPaths, usedSplinePaths, createTile, suggestNewTileCoords } from "../omsi/map";
+import {
+  usedObjectPaths, usedSplinePaths, createTile, suggestNewTileCoords,
+  getGroundTexEntries, setGroundTexEntries,
+} from "../omsi/map";
 import type { OmsiMap } from "../omsi/types";
 
 /** Nástroje v levém panelu: tool-y viewportu + „tile" (UI panel, ne klik-nástroj). */
@@ -284,7 +287,7 @@ export class EditorApp {
     pBrushRow.append(pBrushLbl, pBrush);
     this.paintListEl = el("div", "palette-list");
     paint.append(el("div", "tool-head", "Malování povrchu"), paintRow, pBrushRow, paintFilter, this.paintListEl,
-      el("div", "hint", "Vyber texturu a táhni po terénu. Malování je zatím jen v rámci relace (OMSI formát malby terénu není doložen)."));
+      el("div", "hint", "Vyber texturu a táhni po terénu. Malba se ukládá do nativních OMSI masek; změny ulož Ctrl+S."));
     this.toolPanels.paint = paint;
 
     // Guma
@@ -304,7 +307,7 @@ export class EditorApp {
     const addTileBtn = el("button", "btn btn-sm btn-primary", "Přidat dlaždici");
     addTileBtn.addEventListener("click", () => this.addTile());
     tile.append(coordRow, addTileBtn,
-      el("div", "hint", "Vytvoří prázdnou plochou dlaždici (300x300 m) vedle mapy. Uloží se do mapy včetně záznamu v global.cfg."));
+      el("div", "hint", "Vytvoří prázdnou plochou dlaždici vedle mapy podle jejího měřítka. Uloží se i záznam v global.cfg."));
 
     tile.append(el("div", "tool-head", "Základní textura terénu"));
     const texRow = el("div", "palette-add");
@@ -321,7 +324,7 @@ export class EditorApp {
     const texList = el("div", "palette-list");
     texList.id = "__baseTexList";
     tile.append(texRow, texList,
-      el("div", "hint", "Náhled základní textury (tráva apod.) pro celou mapu. Změna palety v global.cfg se zatím neukládá."));
+      el("div", "hint", "Základní textura terénu pro celou mapu. Změnu potvrď Ctrl+S; uloží se do global.cfg."));
     this.toolPanels.tile = tile;
 
     for (const t of TOOLS) { const p = this.toolPanels[t.id]!; p.style.display = "none"; area.append(p); }
@@ -387,12 +390,15 @@ export class EditorApp {
   /** Nastaví základní texturu terénu mapy (náhled; groundTex[0]). */
   private applyBaseTexture(path: string) {
     if (!this.map || !path) return;
-    if (this.map.groundTex.length === 0) this.map.groundTex.push({ main: path, detail: "" });
-    else this.map.groundTex[0] = { main: path, detail: this.map.groundTex[0].detail };
+    const entries = getGroundTexEntries(this.map);
+    if (entries.length === 0) entries.push({ main: path, detail: "", nums: ["9", "1", "60"] });
+    else entries[0].main = path;
+    setGroundTexEntries(this.map, entries);
     addKnownAsset("texture", path);
     this.viewport.reloadGround();
     this.renderBaseTexList();
-    this.setStatus(`Základní textura: ${baseName(path)} (náhled).`);
+    this.updateDirty();
+    this.setStatus(`Základní textura nastavena: ${baseName(path)}. Ulož Ctrl+S.`);
   }
 
   private renderBaseTexList() {
@@ -805,7 +811,8 @@ export class EditorApp {
   }
 
   private updateDirty() {
-    const dirty = this.map ? this.map.tiles.filter((t) => t.dirty).length : 0;
+    const tileDirty = this.map ? this.map.tiles.filter((t) => t.dirty).length : 0;
+    const dirty = tileDirty + (this.map?.globalDirty ? 1 : 0) + this.viewport.getUnsavedPaintCount();
     this.dirtyEl.style.display = dirty > 0 ? "inline-flex" : "none";
     this.dirtyEl.textContent = dirty > 0 ? `● neuloženo (${dirty}) - Ctrl+S` : "";
     this.mapNameEl.classList.toggle("dirty", dirty > 0);
@@ -815,9 +822,18 @@ export class EditorApp {
     if (!this.map) return;
     try {
       this.setStatus("Ukládám…");
-      const n = await saveMap(this.map);
+      const masks = this.viewport.getDirtyPaintMasks().map((m) => ({
+        fileName: m.fileName,
+        data: serializeAlphaDds(m.width, m.height, m.alpha),
+      }));
+      const result = await saveMap(this.map, masks);
+      this.viewport.markPaintSaved();
       this.updateDirty();
-      this.setStatus(n > 0 ? `Uloženo ${n} dlaždic.` : "Nebylo co uložit.");
+      const saved: string[] = [];
+      if (result.tiles) saved.push(`${result.tiles} dlaždic`);
+      if (result.assets) saved.push(`${result.assets} malovaných vrstev`);
+      if (result.global) saved.push("global.cfg");
+      this.setStatus(saved.length ? `Uloženo: ${saved.join(", ")}.` : "Nebylo co uložit.");
     } catch (err) {
       this.setStatus("Chyba uložení: " + (err as Error).message, true);
     }

@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld("omsiAPI", {
   openMapFolder: () => ipcRenderer.invoke("omsi:openMapFolder"),
   saveTiles: (rootPath, tiles) => ipcRenderer.invoke("omsi:saveTiles", rootPath, tiles),
   saveTerrains: (rootPath, terrains) => ipcRenderer.invoke("omsi:saveTerrains", rootPath, terrains),
+  saveMapAssets: (rootPath, assets) => ipcRenderer.invoke("omsi:saveMapAssets", rootPath, assets),
   readAsset: (omsiRoot, relPath) => ipcRenderer.invoke("omsi:readAsset", omsiRoot, relPath),
   /** Otevře dialog pro výběr souboru(ů) assetu; vrací cesty relativní ke kořeni OMSI. */
   pickAsset: (omsiRoot, kind) => ipcRenderer.invoke("omsi:pickAsset", omsiRoot, kind),

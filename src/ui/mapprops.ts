@@ -104,7 +104,7 @@ export class MapPropsDialog {
     const addRow = el("div", "set-update");
     const addBtn = el("button", "btn btn-sm", "+ Přidat texturu");
     addBtn.addEventListener("click", () => {
-      this.ground.push({ main: "", detail: "", nums: ["0", "1", "60"] });
+      this.ground.push({ main: "", detail: "", nums: ["9", "1", "60"] });
       this.renderGround();
     });
     const browseBtn = el("button", "btn btn-sm", "Procházet…");
@@ -178,7 +178,7 @@ export class MapPropsDialog {
   private async browseAdd() {
     try {
       const rels = await pickAssetFiles("texture", omsiRootOf(this.map));
-      for (const r of rels) this.ground.push({ main: r, detail: "", nums: ["0", "1", "60"] });
+      for (const r of rels) this.ground.push({ main: r, detail: "", nums: ["9", "1", "60"] });
       if (rels.length) this.renderGround();
     } catch (err) {
       this.setStatus("Chyba výběru: " + (err as Error).message, true);

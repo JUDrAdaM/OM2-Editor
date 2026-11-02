@@ -10,6 +10,28 @@ function serializeTerrain(t: TerrainData): Uint8Array {
   for (let i = 0; i < t.size * t.size; i++) dv.setFloat32(4 + i * 4, t.heights[i] as number, true);
   return out;
 }
+
+/** OMSI terrain paint mask: legacy DDS with one 8-bit alpha plane and no mips. */
+export function serializeAlphaDds(width: number, height: number, alpha: Uint8Array): Uint8Array {
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 ||
+      width > 4096 || height > 4096 || alpha.length !== width * height) {
+    throw new Error("Neplatné rozměry masky terénu.");
+  }
+  const out = new Uint8Array(128 + alpha.length);
+  const dv = new DataView(out.buffer);
+  out.set([0x44, 0x44, 0x53, 0x20], 0); // DDS
+  dv.setUint32(4, 124, true);            // DDS_HEADER size
+  dv.setUint32(8, 0x1007, true);         // CAPS | HEIGHT | WIDTH | PIXELFORMAT
+  dv.setUint32(12, height, true);
+  dv.setUint32(16, width, true);
+  dv.setUint32(76, 32, true);            // DDS_PIXELFORMAT size
+  dv.setUint32(80, 0x2, true);           // DDPF_ALPHA
+  dv.setUint32(88, 8, true);             // alpha-only, 8 bits per pixel
+  dv.setUint32(104, 0xff, true);         // alpha mask
+  dv.setUint32(108, 0x1000, true);       // DDSCAPS_TEXTURE
+  out.set(alpha, 128);
+  return out;
+}
 import type { AssetSource } from "../viewport/models";
 
 // Most do Electronu (viz electron/preload.cjs). V prohlížeči je undefined.
@@ -56,6 +78,10 @@ interface OmsiAPI {
   saveTerrains?: (
     rootPath: string,
     terrains: { fileName: string; data: Uint8Array }[]
+  ) => Promise<{ error?: string; saved?: number }>;
+  saveMapAssets?: (
+    rootPath: string,
+    assets: { fileName: string; data: Uint8Array }[]
   ) => Promise<{ error?: string; saved?: number }>;
   readAsset?: (omsiRoot: string, relPath: string) => Promise<Uint8Array | null>;
   pickAsset?: (
@@ -574,6 +600,7 @@ export async function saveGlobalCfg(map: OmsiMap): Promise<void> {
     }
     const res = await window.omsiAPI.saveGlobalCfg(map.rootPath, content);
     if (res.error) throw new Error(res.error);
+    map.globalDirty = false;
     return;
   }
   if (dirHandle) {
@@ -581,15 +608,26 @@ export async function saveGlobalCfg(map: OmsiMap): Promise<void> {
     const w = await fh.createWritable();
     await w.write(new Blob([encodeOmsiUtf16(content) as BlobPart]));
     await w.close();
+    map.globalDirty = false;
     return;
   }
   throw new Error("Není kam uložit global.cfg - otevři mapu v desktop aplikaci.");
 }
 
-/** Uloží všechny „dirty" dlaždice zpět na disk. Vrátí počet uložených. */
-export async function saveMap(map: OmsiMap): Promise<number> {
+export interface SaveMapResult {
+  tiles: number;
+  assets: number;
+  global: boolean;
+}
+
+/** Uloží upravené dlaždice, terénní masky a global.cfg zpět na disk. */
+export async function saveMap(
+  map: OmsiMap,
+  assets: { fileName: string; data: Uint8Array }[] = []
+): Promise<SaveMapResult> {
   const dirty = map.tiles.filter((t) => t.dirty);
-  if (dirty.length === 0) return 0;
+  const saveGlobal = !!map.globalDirty;
+  if (dirty.length === 0 && assets.length === 0 && !saveGlobal) return { tiles: 0, assets: 0, global: false };
 
   const payload = dirty.map((t) => ({
     fileName: t.fileName,
@@ -607,18 +645,28 @@ export async function saveMap(map: OmsiMap): Promise<number> {
     .map((t) => ({ tileX: t.tileX, tileY: t.tileY, fileName: t.fileName }));
 
   if (window.omsiAPI?.isElectron) {
-    const res = await window.omsiAPI.saveTiles(map.rootPath, payload);
-    if (res.error) throw new Error(res.error);
+    let savedTiles = 0;
+    if (payload.length) {
+      const res = await window.omsiAPI.saveTiles(map.rootPath, payload);
+      if (res.error) throw new Error(res.error);
+      savedTiles = res.saved ?? payload.length;
+    }
     if (terrains.length && window.omsiAPI.saveTerrains) {
       const tr = await window.omsiAPI.saveTerrains(map.rootPath, terrains);
       if (tr.error) throw new Error(tr.error);
     }
-    if (newTiles.length && window.omsiAPI.addTileEntries) {
+    if (assets.length) {
+      if (!window.omsiAPI.saveMapAssets) throw new Error("Tato verze aplikace neumí ukládat malbu terénu - aktualizuj aplikaci.");
+      const ar = await window.omsiAPI.saveMapAssets(map.rootPath, assets);
+      if (ar.error) throw new Error(ar.error);
+    }
+    if (newTiles.length && !saveGlobal && window.omsiAPI.addTileEntries) {
       const ae = await window.omsiAPI.addTileEntries(map.rootPath, newTiles);
       if (ae.error) throw new Error(ae.error);
     }
+    if (saveGlobal) await saveGlobalCfg(map);
     dirty.forEach((t) => { t.dirty = false; t.isNew = false; });
-    return res.saved ?? dirty.length;
+    return { tiles: savedTiles, assets: assets.length, global: saveGlobal };
   }
 
   if (dirHandle) {
@@ -634,9 +682,20 @@ export async function saveMap(map: OmsiMap): Promise<number> {
       await w.write(new Blob([tr.data as BlobPart]));
       await w.close();
     }
-    if (newTiles.length) await appendTileEntriesToHandle(dirHandle, newTiles);
+    for (const asset of assets) {
+      const parts = asset.fileName.split(/[\\/]/).filter(Boolean);
+      if (parts.some((p) => p === "." || p === "..") || parts.length < 2) throw new Error("Neplatná cesta souboru mapy.");
+      let dir = dirHandle;
+      for (const part of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(part, { create: true });
+      const fh = await dir.getFileHandle(parts[parts.length - 1], { create: true });
+      const w = await fh.createWritable();
+      await w.write(new Blob([asset.data as BlobPart]));
+      await w.close();
+    }
+    if (newTiles.length && !saveGlobal) await appendTileEntriesToHandle(dirHandle, newTiles);
+    if (saveGlobal) await saveGlobalCfg(map);
     dirty.forEach((t) => { t.dirty = false; t.isNew = false; });
-    return payload.length;
+    return { tiles: payload.length, assets: assets.length, global: saveGlobal };
   }
 
   throw new Error("Není kam uložit - otevři mapu tlačítkem Otevřít mapu (desktop build).");

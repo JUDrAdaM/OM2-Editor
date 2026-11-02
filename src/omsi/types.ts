@@ -132,6 +132,8 @@ export interface MapTile {
   /** Souřadnice dlaždice v mřížce (z global.cfg). */
   tileX: number;
   tileY: number;
+  /** Fyzická velikost dlaždice; s [worldcoordinates] může být přibližně 372 m. */
+  tileSize?: number;
   /** Název .map souboru. */
   fileName: string;
   /** ZDROJ PRAVDY: všechny sekce .map v původním pořadí (vč. hlavičky). */
@@ -171,8 +173,12 @@ export interface OmsiMap {
    * když se načetlo vše.
    */
   totalTiles: number;
+  /** OMSI tile edge in metres: 300 normally, about 371.9 with [worldcoordinates]. */
+  tileSize: number;
   /** Syrové sekce z global.cfg, které zatím jen uchováváme. */
   globalSections: OmsiSection[];
+  /** global.cfg bylo změněno a čeká na uložení přes Ctrl+S. */
+  globalDirty?: boolean;
   /**
    * Paleta terénních textur z global.cfg `[groundtex]` (pořadí = index). Index 0
    * je základní textura terénu (typicky tráva); další jsou detaily nanášené přes

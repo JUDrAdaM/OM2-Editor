@@ -1,5 +1,6 @@
 import { parseOmsiConfig, num } from "./parser";
 import { parseTerrain } from "./terrain";
+import { TILE_SIZE } from "./types";
 import type {
   OmsiMap,
   MapTile,
@@ -260,12 +261,14 @@ export function parseTile(
   text: string,
   tileX: number,
   tileY: number,
-  fileName: string
+  fileName: string,
+  tileSize = TILE_SIZE
 ): MapTile {
   const sections = parseOmsiConfig(text);
   const tile: MapTile = {
     tileX,
     tileY,
+    tileSize,
     fileName,
     sections,
     objects: [],
@@ -286,8 +289,12 @@ export function parseGlobalCfg(text: string): {
   tiles: { tileX: number; tileY: number; fileName: string }[];
   sections: OmsiSection[];
   groundTex: { main: string; detail: string }[];
+  tileSize: number;
 } {
   const sections = parseOmsiConfig(text);
+  // OMSI's [worldcoordinates] switches from 300 m local tiles to a 1/300° grid.
+  // For OMSI 2's map projection the corresponding edge is about 371.9 m.
+  const tileSize = sections.some((s) => s.name.toLowerCase() === "worldcoordinates") ? 371.9 : TILE_SIZE;
   const tiles: { tileX: number; tileY: number; fileName: string }[] = [];
   const groundTex: { main: string; detail: string }[] = [];
   let name = "";
@@ -312,7 +319,7 @@ export function parseGlobalCfg(text: string): {
       }
     }
   }
-  return { name, friendlyName, tiles, sections, groundTex };
+  return { name, friendlyName, tiles, sections, groundTex, tileSize };
 }
 
 /** Sloučí global.cfg + obsah .map souborů do kompletního modelu. */
@@ -348,7 +355,7 @@ export function buildMap(
   for (const t of selected) {
     if (includeTile && !includeTile(t.tileX, t.tileY)) continue;
     const text = tileTexts.get(t.fileName) ?? "";
-    const tile = parseTile(text, t.tileX, t.tileY, t.fileName);
+    const tile = parseTile(text, t.tileX, t.tileY, t.fileName, g.tileSize);
     const terrainBuf = terrains?.get(t.fileName);
     if (terrainBuf) {
       const terr = parseTerrain(terrainBuf);
@@ -363,6 +370,7 @@ export function buildMap(
     rootPath,
     tiles,
     totalTiles,
+    tileSize: g.tileSize,
     globalSections: g.sections,
     groundTex: g.groundTex,
   };
@@ -675,6 +683,7 @@ export function createTile(map: OmsiMap, tileX: number, tileY: number, baseHeigh
 
   const tile: MapTile = {
     tileX, tileY, fileName, sections,
+    tileSize: map.tileSize,
     objects: [], splines: [], splineAttachments: [], attachObjects: [],
     groundTextures: [],
     terrain: flatTerrain(size, h),
@@ -751,6 +760,7 @@ export function createNewMap(opts: NewMapOptions): OmsiMap {
     rootPath: "",
     tiles: [],
     totalTiles: 0,
+    tileSize: TILE_SIZE,
     globalSections,
     groundTex: [{ main: groundMain, detail: groundDetail }],
   };
@@ -779,6 +789,7 @@ export function setFriendlyName(map: OmsiMap, value: string): void {
     secs.splice(after >= 0 ? after + 1 : 0, 0, { name: "friendlyname", values: [value] });
   }
   map.friendlyName = value;
+  map.globalDirty = true;
 }
 
 /** Nastaví interní název mapy ([name]). */
@@ -788,6 +799,7 @@ export function setMapName(map: OmsiMap, value: string): void {
   if (i >= 0) secs[i].values = [value];
   else secs.unshift({ name: "name", values: [value] });
   map.name = value;
+  map.globalDirty = true;
 }
 
 /** Vrátí popis mapy ([description]) jako víceřádkový text. */
@@ -813,6 +825,7 @@ export function setDescription(map: OmsiMap, text: string): void {
     at = at >= 0 ? at + (sectionIndex(secs, "version") >= 0 ? 0 : 1) : secs.length;
     secs.splice(at, 0, { name: "description", values: lines }, { name: "end", values: [] });
   }
+  map.globalDirty = true;
 }
 
 /** Jedna položka palety terénních textur z global.cfg ([groundtex]). */
@@ -852,12 +865,13 @@ export function setGroundTexEntries(map: OmsiMap, entries: GroundTexEntry[]): vo
     .filter((e) => e.main.trim())
     .map((e) => ({
       name: "groundtex",
-      values: [e.main.trim(), e.detail.trim(), ...(e.nums.length ? e.nums : ["0", "1", "60"])],
+      values: [e.main.trim(), e.detail.trim(), ...(e.nums.length ? e.nums : ["9", "1", "60"])],
     }));
   let at = sectionIndex(secs, "map");
   if (at < 0) at = secs.length;
   secs.splice(at, 0, ...newSecs);
   map.groundTex = newSecs.map((s) => ({ main: s.values[0], detail: s.values[1] ?? "" }));
+  map.globalDirty = true;
 }
 
 /** Duplikuje objekt (klon sekce) s novým ID a posunem; vrátí nový MapObject. */
